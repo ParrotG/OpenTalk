@@ -247,6 +247,14 @@ wheels = [
 ]
 
 [[package]]
+name = "flatbuffers"
+version = "25.12.19"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl", hash = "sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4", size = 26661, upload-time = "2025-12-19T23:16:13.622Z" },
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -465,6 +473,9 @@ images = [
 openai = [
     { name = "livekit-plugins-openai" },
 ]
+silero = [
+    { name = "livekit-plugins-silero" },
+]
 soniox = [
     { name = "livekit-plugins-soniox" },
 ]
@@ -520,6 +531,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/7d/a1/83def4826473c09609f18165f7669abb314652ec1955109005b955ac9572/livekit_plugins_openai-1.8.5.tar.gz", hash = "sha256:18b548a6c66251c5d4019bcad2cdc18370f15cf5fcb3a46edad401db26388fa5", size = 49125, upload-time = "2026-10-06T01:41:56.39Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/47/5e/3bbf7a771609188ecc8baa804fa12f6951bb05cd593d1a2ff2f6ae4ae937/livekit_plugins_openai-1.8.5-py3-none-any.whl", hash = "sha256:7e914ea04027bd54f5e5af86a122aad77c99b8a943bbd0354c1c19ef41a75dcd", size = 56111, upload-time = "2026-10-06T01:41:55.046Z" },
+]
+
+[[package]]
+name = "livekit-plugins-silero"
+version = "1.8.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "livekit-agents" },
+    { name = "numpy" },
+    { name = "onnxruntime" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/20/2f/3e7d43ed83c0a6b35dbf567f38e715dbc31f48bb5e1b0478248242ff60b6/livekit_plugins_silero-1.8.5.tar.gz", hash = "sha256:9e5713a30febb84bc0ee2b9ee432d7239cbffc7f3cacc4bf4baea407cbaddc20", size = 1955421, upload-time = "2026-10-06T01:42:26.654Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/86/3e050558e47e3f539a32664bee4f1705956be99bc10fe95bcd1bfc5e941e/livekit_plugins_silero-1.8.5-py3-none-any.whl", hash = "sha256:b865b3d57af5232623f0ba2c6e31b101ac5e83e041b2b0e5eba6b1162c859acb", size = 3903145, upload-time = "2026-10-06T01:42:25.052Z" },
 ]
 
 [[package]]
@@ -633,6 +658,24 @@ wheels = [
 ]
 
 [[package]]
+name = "onnxruntime"
+version = "1.30.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "flatbuffers" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "protobuf" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/b6/e2fa6dfc8c3cd19639d452c3120fb0e02f5176b4e24ecabb24b5362be725/onnxruntime-1.30.0-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:f36c87ec504f4f328e968ee322e4ba9682abe66280b3425625afcbed5333fed7", size = 21533037, upload-time = "2026-09-10T16:31:03.582Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/1a/4d197d2676a866f6239cd2d06a95b6db40d47dc29d5bec9fb1493a13dd94/onnxruntime-1.30.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:bac3aee7b40acd805659fd81a2acd6096312d5b0f014c97ddfe75fb4c1644627", size = 21332697, upload-time = "2026-09-10T16:31:08.118Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/2e/4c96278a99140d0307ccda6fd51e6e9d1ca7c9f6fdd1fa96ff375acfc713/onnxruntime-1.30.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:fd54b314ea385bcecac69ab431f020ba503e3878dad4ebb645fec5a24b041242", size = 23561046, upload-time = "2026-09-10T16:31:11.494Z" },
+    { url = "https://files.pythonhosted.org/packages/66/68/b8aaade8c1883f569228f4b57201cce922bb7d4af6f977d619520a733430/onnxruntime-1.30.0-cp311-cp311-win_amd64.whl", hash = "sha256:0edd0145a6e3fce8a1276491dc784d615e3c58bcb952c9b4e5c876d5c6a12ad7", size = 14309136, upload-time = "2026-09-10T16:31:14.181Z" },
+    { url = "https://files.pythonhosted.org/packages/96/f1/fbda6fb08ac4db6c5c6f7c3e128e4d8fb398b52fe2fc3282c45cadedd18b/onnxruntime-1.30.0-cp311-cp311-win_arm64.whl", hash = "sha256:16506cfa5d218850f2b46e0edce1b952121f2f84f8e0074dafe15f4787f0c8fb", size = 14167408, upload-time = "2026-09-10T16:31:16.505Z" },
+]
+
+[[package]]
 name = "openai"
 version = "2.54.0"
 source = { registry = "https://pypi.org/simple" }
@@ -657,7 +700,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "av" },
-    { name = "livekit-agents", extra = ["openai", "soniox"] },
+    { name = "livekit-agents", extra = ["openai", "silero", "soniox"] },
     { name = "python-dotenv" },
 ]
 
@@ -669,7 +712,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "av", specifier = ">=16,<19" },
-    { name = "livekit-agents", extras = ["openai", "soniox"], specifier = ">=1.3,<2" },
+    { name = "livekit-agents", extras = ["openai", "soniox", "silero"], specifier = ">=1.3,<2" },
     { name = "python-dotenv", specifier = ">=1,<2" },
 ]
 

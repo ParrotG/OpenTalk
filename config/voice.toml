@@ -1,0 +1,15 @@
+[voice]
+agent_name = "opentalk-booking"
+livekit_url = "ws://localhost:7880"
+log_directory = "logs/voice"
+log_flush_interval_seconds = 1.0
+max_tool_steps = 8
+min_interruption_duration = 0.3
+endpoint_min_delay = 0.0
+endpoint_max_delay = 3.0
+
+[vad]
+min_speech_duration = 0.05
+min_silence_duration = 0.55
+prefix_padding_duration = 0.5
+activation_threshold = 0.5
