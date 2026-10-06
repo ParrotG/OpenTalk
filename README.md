@@ -4,7 +4,7 @@ OpenTalk is a voice demo project for learning and validating streaming voice age
 
 ## Status
 
-The meeting-room booking backend is implemented with SQLite, a Python service, a CLI, and smoke tests. Voice, LLM, browser, and external API integration are not implemented yet. No API credentials are required for the booking backend.
+The meeting-room booking backend and configurable streaming LLM provider are implemented. The provider returns a native LiveKit `LLM` instance backed by the OpenAI SDK. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. Voice, browser integration, and an application-level AgentSession are not implemented yet. The booking CLI and offline tests require no API credentials.
 
 See the [development plan](docs/开发计划.md) for the agreed architecture, module boundaries, and acceptance criteria. The development plan is written in Chinese.
 
@@ -34,20 +34,49 @@ ASR, LLM, and TTS providers will be independently configurable. A local implemen
 
 ## Configuration and secrets
 
-Public backend settings are in `config/backend.toml`: database path, timezone, fixed demo user, rooms, and slot schedule. Relative configured database paths resolve from the project root. Future voice settings will also be centralized under `config/`.
+Public backend settings are in `config/backend.toml`: database path, timezone, fixed demo user, rooms, and slot schedule. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. Future voice settings will also be centralized under `config/`.
 
-Secrets will be loaded from the root `.env.local` file or process environment variables. Process environment variables will take precedence. The Python application will explicitly load the root file.
+The LLM factory loads secrets from the root `.env.local` file or process environment variables. Process environment variables take precedence. The Python application explicitly loads the root file, independently of the working directory.
 
 The remote implementation requires:
 
 - `SONIOX_API_KEY` and valid Soniox model and voice settings.
-- `OPENAI_API_KEY`, or a configurable credential variable for a compatible provider.
+- `DEEPSEEK_API_KEY` for the current official DeepSeek endpoint, or a configurable credential variable for another compatible provider.
 - A configured LLM model that supports streaming and tool calls.
 - A reachable LiveKit Server and server-side authentication settings.
 
 Provider credentials and LiveKit API secrets must remain on the backend. The browser will receive only public settings and short-lived connection tokens. Server secrets must not use `NEXT_PUBLIC_*` variables.
 
-Ignore rules already exclude secret files and runtime data. The remote integration will add an environment example with placeholders. Do not commit real `.env.local` files, databases, transcripts, logs, or recordings. Secret loading is not needed or implemented in the current backend.
+Ignore rules exclude secret files and runtime data. `.env.example` contains placeholders; copy it to `.env.local` or set the credential in your process environment. Do not commit real `.env.local` files, databases, transcripts, logs, or recordings. Booking-only commands do not load or require model credentials.
+
+## Streaming LLM and text tool tests
+
+The current configuration uses `deepseek-flash` at `https://api.deepseek.com`, with `DEEPSEEK_API_KEY` and thinking disabled. Model identifiers and provider-specific request options live in configuration, not business code. Changing providers requires checking streaming and tool-call support and adjusting `extra_body` as appropriate.
+
+Run the paid streaming smoke test after configuring the credential:
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.llm.smoke
+```
+
+The smoke test consumes the actual LiveKit `LLM.chat()` stream and reports non-empty text chunk count, time to first content, elapsed time, output, and usage. It requires multiple text chunks and makes no booking writes.
+
+Run offline tests, or explicitly opt into paid network tests:
+
+```bash
+uv run --locked pytest -q
+uv run --locked pytest tests/test_llm_live.py --live-llm -q
+```
+
+Live tests are skipped by default even when credentials exist. They use temporary databases and exercise mixed Chinese/English input, a changed proposal, confirmation, booking lookup, cancellation, and abandonment without confirmation. They assert tool calls and persisted business state rather than exact wording. LLM responses remain probabilistic; these runs are representative scenarios, not guarantees for arbitrary input.
+
+Validation on October 7, 2026: 12 offline tests passed; all three live tests passed in separate streaming and tool-scenario runs. See the [validation record](docs/LLM验证记录.md) for observations and scope.
+
+The tests save local reports to `logs/llm-booking-lifecycle.json` and `logs/llm-no-implicit-confirmation.json`. Reports contain role-separated chat items, tool calls and outputs, turn timings, and operation events. Each run atomically replaces its report instead of appending duplicate records. Reports are ignored by Git and do not include provider credentials.
+
+`create_llm()` can be passed directly to a future LiveKit session. `BookingTools.get_tools()` returns native LiveKit function tools. The bounded text driver in `tests/text_harness.py` uses LiveKit's tool validation and execution helpers; it is only test scaffolding and does not create an application Agent, worker, room, or voice pipeline.
+
+Committed writes require host authorization. `authorize_confirmation(operation_id, version)` and `authorize_cancellation(booking_id)` are Python methods, not LLM tools. The live test explicitly grants permission after a scripted user confirmation or cancellation request. This verifies the execution boundary; automatic interpretation of arbitrary confirmations and persistent conversation state are deferred to the application conversation layer. The LLM cannot authorize itself.
 
 ## Run the booking backend
 
@@ -94,12 +123,14 @@ Checked on October 6, 2026:
 | Python 3.11 | 3.11.14 at `/usr/bin/python3.11` |
 | Default `python3` | 3.10.12; project setup must explicitly select Python 3.11 |
 | LiveKit CLI and Server | Not found on the current PATH |
-| Project dependencies | pytest development dependencies installed with uv on October 7, 2026; no runtime dependencies |
+| Project dependencies | pytest, LiveKit Agents/OpenAI plugin, and dotenv installed with uv on October 7, 2026 |
 | Git metadata | `git status` does not recognize the current directory as a repository |
 
 The default uv cache was not writable in the inspection sandbox. Setting `UV_CACHE_DIR=/tmp/opentalk-uv-cache` allowed installed Python discovery to complete. This is an inspection workaround, not a required project default.
 
-Booking smoke tests run on Python 3.11. API credentials, remote account access, voice package compatibility, and microphone behavior have not been validated.
+The current restricted sandbox can also stall during `asyncio.run()` thread-pool shutdown, including a minimal `asyncio.to_thread()` example. The complete offline suite passed outside that sandbox; no application workaround was introduced. Real API tests require network access to the configured endpoint.
+
+Booking tests run on Python 3.11. The configured DeepSeek credential and official endpoint have passed a real streaming smoke test and two real text-tool scenarios. Soniox, LiveKit Server connectivity, voice package compatibility, and microphone behavior have not been validated.
 
 ## Development conventions
 

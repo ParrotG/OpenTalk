@@ -1,0 +1,11 @@
+[llm]
+base_url = "https://api.deepseek.com"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+temperature = 0.0
+max_completion_tokens = 1024
+timeout_seconds = 30.0
+max_tool_rounds = 8
+
+[llm.extra_body.thinking]
+type = "disabled"
