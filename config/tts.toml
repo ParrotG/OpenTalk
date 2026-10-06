@@ -1,0 +1,15 @@
+[tts]
+websocket_url = "wss://tts-rt.soniox.com/tts-websocket"
+model = "tts-rt-v2"
+voice = "Maya"
+language = "zh"
+api_key_env = "SONIOX_API_KEY"
+sample_rate = 24000
+speed = 1.0
+connection_timeout_seconds = 15.0
+stream_idle_timeout_seconds = 5.0
+
+[smoke]
+chunk_chars = 12
+chunk_delay_ms = 150
+timeout_seconds = 120.0

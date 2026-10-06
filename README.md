@@ -4,7 +4,7 @@ OpenTalk is a voice demo project for learning and validating streaming voice age
 
 ## Status
 
-The meeting-room booking backend, configurable streaming LLM provider, and Soniox streaming ASR provider are implemented. Providers return native LiveKit `LLM` and `STT` instances. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. ASR can be tested by replaying a local audio file without a frontend or LiveKit Server. TTS, browser integration, and an application-level AgentSession are not implemented yet. The booking CLI and offline tests require no API credentials.
+The meeting-room booking backend, configurable streaming LLM provider, and Soniox streaming ASR/TTS providers are implemented. Providers return native LiveKit `LLM`, `STT`, and `TTS` instances. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. ASR can replay a local audio file, and TTS can stream text into a WAV output, without a frontend or LiveKit Server. Browser integration and an application-level AgentSession are not implemented yet. The booking CLI and offline tests require no API credentials.
 
 See the [development plan](docs/开发计划.md) for the agreed architecture, module boundaries, and acceptance criteria. The development plan is written in Chinese.
 
@@ -36,7 +36,7 @@ ASR, LLM, and TTS providers will be independently configurable. A local implemen
 
 Public backend settings are in `config/backend.toml`: database path, timezone, fixed demo user, rooms, and slot schedule. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. `config/asr.toml` configures the Soniox endpoint, model, language hints, sample rate, endpoint delay, and file replay settings.
 
-The LLM and ASR factories load secrets from the root `.env.local` file or process environment variables. Process environment variables take precedence. The Python application explicitly loads the root file, independently of the working directory.
+The LLM, ASR, and TTS factories load secrets from the root `.env.local` file or process environment variables. Process environment variables take precedence. The Python application explicitly loads the root file, independently of the working directory. `config/tts.toml` configures the synthesis endpoint, model, voice, primary language, sample rate, speed, timeouts, and simulated text input settings.
 
 The remote implementation requires:
 
@@ -102,6 +102,30 @@ uv run --locked pytest tests/test_asr_offline.py -q
 ```
 
 The 18 ASR offline tests use the real native plugin with a simulated WebSocket. They cover PCM framing, WAV/MP3 decoding, resampling, mixed-language revisions, provisional preflight text, finalization, credential precedence, timeout, API errors, no-speech input, cancellation, report replacement, and resource cleanup. They make no network calls. Real Soniox accuracy and latency have not yet been validated because no credential or user recording was available. See the Chinese [ASR test guide](docs/ASR验证指南.md) for recording scenarios and report interpretation.
+
+## Streaming TTS with text input
+
+TTS uses the same `SONIOX_API_KEY` environment variable or root `.env.local` credential as ASR. Run a paid synthesis test with inline text or a UTF-8 file:
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke --text "会议室 A 明天上午十点可用。Please confirm the date and time before booking." --output recordings/tts-demo.wav --report logs/tts-demo.json
+PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke --text-file recordings/tts-input.txt --language en --output recordings/tts-en.wav --report logs/tts-en.json
+```
+
+The native Soniox plugin uses the explicitly configured `tts-rt-v2` model, `Maya` voice, and primary language `zh`. Text is submitted incrementally with `push_text()`, buffered into sentences by the official plugin, and synthesized over WebSocket. PCM16 mono audio is consumed and written as it arrives, then published as a playable WAV. No frontend, LiveKit Server, LLM, external ffmpeg, or audio device is required. Open the completed WAV in your own player; this utility does not play audio in realtime.
+
+`language` is the primary delivery language required by Soniox. It does not classify each utterance or remove foreign words. Mixed Chinese/English text is preserved. Override it with `--language en` or `--language zh`; the provider also supports native `update_options(language=...)` for subsequent streams on the same instance.
+
+The CLI prints first-audio, input-ended, and stream-completed events immediately, then a summary. The report records one assistant message with planned and submitted text, text/audio events, native request and segment IDs, elapsed timings, frame count, duration, and `audio_before_input_end`. Longer, multi-sentence input is recommended to observe audio arriving before all text is submitted. Short input may finish submitting before the first frame. No exact `spoken_text` is claimed.
+
+Without explicit paths, outputs use `recordings/tts-<session_id>.wav` and `logs/tts-<session_id>.json`. Successful output and reports replace their destination atomically. API errors, timeouts, and empty audio fail without replacing an existing successful WAV. Ctrl+C or `--cancel-after 2` cancels synthesis; already received audio is saved separately as `<output-stem>.partial.wav`, with a cancelled report and exit code 130. Component cancellation is covered; voice-triggered barge-in and playback queue handling remain for session integration.
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke --help
+uv run --locked pytest tests/test_tts_offline.py -q
+```
+
+All 18 TTS offline tests passed against the native plugin with a simulated WebSocket. The complete offline suite passed with 48 tests and 3 paid LLM tests skipped. Actual Soniox TTS synthesis has not been run in the development environment because the credential was unavailable. The user reported that the earlier manual ASR cases passed. See the Chinese [TTS test guide](docs/TTS验证指南.md) for text input, cancellation, and listening checks.
 
 ## Run the booking backend
 
