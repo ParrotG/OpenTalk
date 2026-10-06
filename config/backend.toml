@@ -1,0 +1,7 @@
+[booking]
+database_path = "data/opentalk.sqlite3"
+timezone = "Asia/Shanghai"
+demo_user_id = "demo-user"
+rooms = ["Room A", "Room B"]
+slot_start_hours = [9, 10, 14, 15]
+slot_duration_minutes = 60
