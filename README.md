@@ -4,7 +4,7 @@ OpenTalk is a voice demo project for learning and validating streaming voice age
 
 ## Status
 
-The meeting-room booking backend and configurable streaming LLM provider are implemented. The provider returns a native LiveKit `LLM` instance backed by the OpenAI SDK. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. Voice, browser integration, and an application-level AgentSession are not implemented yet. The booking CLI and offline tests require no API credentials.
+The meeting-room booking backend, configurable streaming LLM provider, and Soniox streaming ASR provider are implemented. Providers return native LiveKit `LLM` and `STT` instances. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. ASR can be tested by replaying a local audio file without a frontend or LiveKit Server. TTS, browser integration, and an application-level AgentSession are not implemented yet. The booking CLI and offline tests require no API credentials.
 
 See the [development plan](docs/开发计划.md) for the agreed architecture, module boundaries, and acceptance criteria. The development plan is written in Chinese.
 
@@ -34,9 +34,9 @@ ASR, LLM, and TTS providers will be independently configurable. A local implemen
 
 ## Configuration and secrets
 
-Public backend settings are in `config/backend.toml`: database path, timezone, fixed demo user, rooms, and slot schedule. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. Future voice settings will also be centralized under `config/`.
+Public backend settings are in `config/backend.toml`: database path, timezone, fixed demo user, rooms, and slot schedule. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. `config/asr.toml` configures the Soniox endpoint, model, language hints, sample rate, endpoint delay, and file replay settings.
 
-The LLM factory loads secrets from the root `.env.local` file or process environment variables. Process environment variables take precedence. The Python application explicitly loads the root file, independently of the working directory.
+The LLM and ASR factories load secrets from the root `.env.local` file or process environment variables. Process environment variables take precedence. The Python application explicitly loads the root file, independently of the working directory.
 
 The remote implementation requires:
 
@@ -78,6 +78,31 @@ The tests save local reports to `logs/llm-booking-lifecycle.json` and `logs/llm-
 
 Committed writes require host authorization. `authorize_confirmation(operation_id, version)` and `authorize_cancellation(booking_id)` are Python methods, not LLM tools. The live test explicitly grants permission after a scripted user confirmation or cancellation request. This verifies the execution boundary; automatic interpretation of arbitrary confirmations and persistent conversation state are deferred to the application conversation layer. The LLM cannot authorize itself.
 
+## Streaming ASR with a local audio file
+
+Set `SONIOX_API_KEY` in the process environment or root `.env.local`. Then replay your own recording:
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.asr.replay recordings/demo.wav --output logs/asr-demo.json
+```
+
+The command uses the real Soniox WebSocket API and incurs provider charges. No frontend, microphone, LiveKit Server, LLM, or TTS is required. WAV, MP3, M4A, and other formats supported by the installed PyAV build are decoded locally, downmixed to mono PCM16, and resampled to the configured rate. An external `ffmpeg` executable is not required. Input is paced at its original duration with 20 ms frames rather than uploaded as a batch transcription job.
+
+The native Soniox plugin uses `stt-rt-v5` with Chinese and English hints. Hints are not strict language restrictions. Translation, language labels, and speaker diarization are disabled. Mixed-language text is preserved; the file input is explicitly assigned the `user` role. Interim and preflight text remain provisional, and finalization updates the same message ID. This ASR test performs no booking operations.
+
+Text events are printed immediately as JSON lines; the last JSON object is the summary. The report contains timestamped events, provisional revisions, final user messages, processing usage, and timings from replay start. Reusing `--output` atomically replaces the report. Omitting it writes a new run under `logs/asr-<session_id>.json`. Reports retain multilingual conversation text but no credentials or authentication payloads.
+
+The locked plugin does not terminate its remote session when `end_input()` is called. The replay utility therefore adds 3 seconds of paced silence, waits for processing usage to cover all sent audio and for provisional text to be finalized, then closes the stream. The tail is also sent to the API. The configurable drain deadline starts after the tail; an unfinalized result or missing processing acknowledgement times out and is recorded as a failure. A recording with no finalized speech also fails. This is a bounded file replay test, not a batch API or a server `finished` acknowledgement test.
+
+Press Ctrl+C to stop replay and close its resources; the report is marked cancelled. This checks stream cancellation, while conversational barge-in requires the future VAD/TTS/session integration. Short recordings may produce only final text; use a longer recording to observe interim updates.
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.asr.replay --help
+uv run --locked pytest tests/test_asr_offline.py -q
+```
+
+The 18 ASR offline tests use the real native plugin with a simulated WebSocket. They cover PCM framing, WAV/MP3 decoding, resampling, mixed-language revisions, provisional preflight text, finalization, credential precedence, timeout, API errors, no-speech input, cancellation, report replacement, and resource cleanup. They make no network calls. Real Soniox accuracy and latency have not yet been validated because no credential or user recording was available. See the Chinese [ASR test guide](docs/ASR验证指南.md) for recording scenarios and report interpretation.
+
 ## Run the booking backend
 
 Run these commands from the project root:
@@ -109,7 +134,7 @@ Preparing a proposal does not reserve a slot. To change an unconfirmed proposal,
 
 Reuse the operation ID and unchanged arguments when retrying. Query `operation OPERATION_ID` after a lost response. Successful operations retain their original result snapshot, even if the booking is subsequently cancelled; use `booking BOOKING_ID` for its current state. Cancellation is an explicit write command and must be invoked deliberately by a future conversation layer.
 
-The service writes business state and operation events in one transaction. Confirmation conflicts and expiry persist a failed operation. This synchronous backend does not persist intermediate executing/unknown states; a caller with an unknown response can recover the committed outcome by operation ID. Slots are fixed, non-overlapping intervals per room. There is no HTTP server, authentication flow, transcript storage, or voice session recorder yet; the fixed user and session are demo context, not production authentication.
+The service writes business state and operation events in one transaction. Confirmation conflicts and expiry persist a failed operation. This synchronous backend does not persist intermediate executing/unknown states; a caller with an unknown response can recover the committed outcome by operation ID. Slots are fixed, non-overlapping intervals per room. There is no HTTP server, authentication flow, SQLite transcript storage, or full voice session recorder yet; the fixed user and session are demo context, not production authentication. LLM tests and ASR replay currently write local JSON reports.
 
 ## Environment inspection
 
@@ -123,14 +148,14 @@ Checked on October 6, 2026:
 | Python 3.11 | 3.11.14 at `/usr/bin/python3.11` |
 | Default `python3` | 3.10.12; project setup must explicitly select Python 3.11 |
 | LiveKit CLI and Server | Not found on the current PATH |
-| Project dependencies | pytest, LiveKit Agents/OpenAI plugin, and dotenv installed with uv on October 7, 2026 |
+| Project dependencies | pytest, LiveKit Agents/OpenAI/Soniox plugins, PyAV, and dotenv installed with uv on October 7, 2026 |
 | Git metadata | `git status` does not recognize the current directory as a repository |
 
 The default uv cache was not writable in the inspection sandbox. Setting `UV_CACHE_DIR=/tmp/opentalk-uv-cache` allowed installed Python discovery to complete. This is an inspection workaround, not a required project default.
 
 The current restricted sandbox can also stall during `asyncio.run()` thread-pool shutdown, including a minimal `asyncio.to_thread()` example. The complete offline suite passed outside that sandbox; no application workaround was introduced. Real API tests require network access to the configured endpoint.
 
-Booking tests run on Python 3.11. The configured DeepSeek credential and official endpoint have passed a real streaming smoke test and two real text-tool scenarios. Soniox, LiveKit Server connectivity, voice package compatibility, and microphone behavior have not been validated.
+Booking tests run on Python 3.11. The configured DeepSeek credential and official endpoint have passed a real streaming smoke test and two real text-tool scenarios. Native Soniox plugin compatibility and file replay have passed offline tests. Real Soniox connectivity, recognition accuracy, LiveKit Server connectivity, and microphone behavior have not been validated.
 
 ## Development conventions
 

@@ -12,3 +12,5 @@ recordings/
 *.sqlite3-wal
 node_modules/
 .next/
+
+assets/

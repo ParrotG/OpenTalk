@@ -1,0 +1,14 @@
+[asr]
+base_url = "wss://stt-rt.soniox.com/transcribe-websocket"
+model = "stt-rt-v5"
+api_key_env = "SONIOX_API_KEY"
+sample_rate = 16000
+language_hints = ["zh", "en"]
+max_endpoint_delay_ms = 1500
+connection_timeout_seconds = 15.0
+
+[replay]
+frame_ms = 20
+# Silence lets the streaming plugin finalize the last utterance after file EOF.
+tail_silence_ms = 3000
+drain_timeout_seconds = 15.0
