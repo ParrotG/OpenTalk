@@ -13,6 +13,9 @@ session, provider, and tool orchestration can be reused for other voice-enabled 
 
 ---
 
+## Demo Video
+https://www.youtube.com/watch?v=qIVQs0rmlEs
+
 ## 1. What OpenTalk is
 
 - A streaming speech pipeline: microphone audio -> VAD/STT -> agent -> LLM/tools -> TTS -> browser
