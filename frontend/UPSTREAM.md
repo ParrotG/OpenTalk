@@ -9,7 +9,7 @@ The upstream MIT license is preserved in `LICENSE`. The following source files a
 - `hooks/agents-ui/use-agent-audio-visualizer-wave.ts`: agent-state and audio-volume animation; added cancellation of previous animations and cleanup on unmount.
 - `lib/shadcn/utils.ts` and `tsconfig.json`: small class-name helper and TypeScript configuration.
 
-The app follows the starter's `useSession`, `useAgent`, and `useSessionMessages` pattern. Cloud sandbox fallback, avatars, camera/screen sharing, themes, marketing screens, markdown chat, and booking controls are omitted. The transcript and persisted-session lifecycle are implemented for OpenTalk's independent control API.
+The app follows the starter's `useSession`, `useAgent`, and `useSessionMessages` pattern. Cloud sandbox fallback, avatars, camera/screen sharing, the upstream theme selector, marketing screens, markdown chat, and booking controls are omitted. The transcript and persisted-session lifecycle are implemented for OpenTalk's independent control API. OpenTalk adds system-following light/dark styles and text input through the native `lk.chat` stream. Lucide icons are pinned to the starter's `0.555.0` resolution.
 
 Selected SDK/runtime versions are pinned to the upstream lockfile resolutions. The existing Python lockfile is unchanged. Browser test tooling is an additional development dependency. No upstream dependency upgrades were introduced.
 

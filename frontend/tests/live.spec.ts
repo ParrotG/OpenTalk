@@ -65,16 +65,14 @@ test('real voice: input, playback, interruption, checkpoint and resumed context'
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/');
-  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeEnabled({
+  await expect(page.getByRole('button', { name: 'Start voice' })).toBeEnabled({
     timeout: 15000,
   });
   await page.screenshot({ path: 'test-results/demo-desktop.png', fullPage: true });
-  await page.getByRole('button', { name: 'Start conversation' }).click();
-  await expect(page.getByRole('button', { name: 'Mute mic' })).toBeEnabled({ timeout: 50000 });
-  const sessionId = (await page
-    .getByLabel('Session details')
-    .locator(':scope > code')
-    .textContent())!;
+  await page.getByRole('button', { name: 'Start voice' }).click();
+  await expect(page.getByRole('button', { name: 'Cancel voice' })).toBeEnabled({ timeout: 50000 });
+  const sessionId = (await (await request.get('/api/control/sessions?limit=20')).json())[0]
+    .session_id;
   await expect(page.locator('.message.assistant')).toContainText('Hello', { timeout: 20000 });
   await expect
     .poll(
@@ -103,9 +101,9 @@ test('real voice: input, playback, interruption, checkpoint and resumed context'
     )
     .toBe(true);
   await expect(page.getByRole('status')).toHaveText('listening', { timeout: 15000 });
-  await page.getByRole('button', { name: 'Mute mic' }).click();
-  await expect(page.getByRole('button', { name: 'Unmute mic' })).toBeEnabled();
-  await page.getByRole('button', { name: 'Unmute mic' }).click();
+  await page.getByRole('button', { name: 'Cancel voice' }).click();
+  await expect(page.getByRole('button', { name: 'Start voice' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Start voice' }).click();
   await page.evaluate(() => window.feedTestAudio('/test-input.wav'));
   await expect(page.getByRole('log')).toContainText(/alice/i, { timeout: 30000 });
   await expect(page.getByRole('status')).toHaveText('speaking', { timeout: 30000 });
@@ -128,9 +126,9 @@ test('real voice: input, playback, interruption, checkpoint and resumed context'
   expect(first.session.status).toBe('completed');
   expect(archive.items.some((item: { interrupted?: boolean }) => item.interrupted)).toBe(true);
   const attemptId = first.session.attempt_id;
-  await page.getByRole('button', { name: 'Resume session' }).click();
-  await expect(page.getByRole('button', { name: 'Mute mic' })).toBeEnabled({ timeout: 50000 });
-  expect(await page.getByLabel('Session details').locator(':scope > code').textContent()).toBe(
+  await page.getByRole('button', { name: 'Start voice' }).click();
+  await expect(page.getByRole('button', { name: 'Cancel voice' })).toBeEnabled({ timeout: 50000 });
+  expect((await (await request.get('/api/control/sessions?limit=20')).json())[0].session_id).toBe(
     sessionId,
   );
   await page.evaluate(() => window.feedTestAudio('/test-resume.wav'));
@@ -171,12 +169,10 @@ test('real voice: fresh sessions are isolated and abnormal disconnect cannot res
     navigator.sendBeacon = () => false;
   });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Start conversation' }).click();
-  await expect(page.getByRole('button', { name: 'Mute mic' })).toBeEnabled({ timeout: 50000 });
-  const sessionId = (await page
-    .getByLabel('Session details')
-    .locator(':scope > code')
-    .textContent())!;
+  await page.getByRole('button', { name: 'Start voice' }).click();
+  await expect(page.getByRole('button', { name: 'Cancel voice' })).toBeEnabled({ timeout: 50000 });
+  const sessionId = (await (await request.get('/api/control/sessions?limit=20')).json())[0]
+    .session_id;
   await expect(page.getByRole('log')).not.toContainText('Alice');
   await page.goto('about:blank');
   await expect
@@ -191,7 +187,8 @@ test('real voice: fresh sessions are isolated and abnormal disconnect cannot res
   });
   expect(rejected.status()).toBe(409);
   await page.goto('/');
+  await page.getByLabel('Recent sessions', { exact: true }).first().click();
   await page.getByRole('button', { name: new RegExp(sessionId.slice(0, 12)) }).click();
-  await expect(page.getByLabel('Session details')).toContainText('cannot be resumed');
+  await expect(page.locator('.archive-notice')).toContainText('cannot be resumed');
   await expect(page.getByRole('button', { name: 'Resume session' })).toHaveCount(0);
 });

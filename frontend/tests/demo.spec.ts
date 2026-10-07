@@ -59,15 +59,18 @@ test('history displays native messages as plain text and only completed sessions
 }) => {
   await mockControl(page);
   await page.goto('/');
-  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Start voice' })).toBeEnabled();
+  await page.getByLabel('Recent sessions', { exact: true }).first().click();
   await page.getByRole('button', { name: /normal-sessi/ }).click();
   await expect(page.getByRole('button', { name: 'Resume session' })).toBeEnabled();
   await expect(page.getByRole('log')).toContainText('Hello <script>unsafe()</script>');
   await expect(page.locator('.message')).toHaveCount(2);
-  await expect(page.getByRole('log')).toContainText('Interrupted');
+  await expect(page.getByRole('log')).not.toContainText('Assistant');
+  await expect(page.getByText('Transcript', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Session details')).toHaveCount(0);
   await page.getByRole('button', { name: /failed-sessi/ }).click();
   await expect(page.getByRole('button', { name: 'Resume session' })).toHaveCount(0);
-  await expect(page.getByLabel('Session details')).toContainText('cannot be resumed');
+  await expect(page.locator('.archive-notice')).toContainText('cannot be resumed');
   await expect(page.getByText(/Booking|Reservation/)).toHaveCount(0);
 });
 
@@ -76,8 +79,10 @@ test('unavailable dependencies prevent voice allocation and are shown clearly', 
 }) => {
   await mockControl(page, false);
   await page.goto('/');
-  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Start voice' })).toBeDisabled();
+  await page.getByLabel('Services', { exact: true }).click();
   await expect(page.getByLabel('Backend services')).toContainText('unavailable');
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeDisabled();
 });
 
 test('microphone denial does not create a session and mobile layout fits', async ({ page }) => {
@@ -93,7 +98,7 @@ test('microphone denial does not create a session and mobile layout fits', async
   });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Start conversation' }).click();
+  await page.getByRole('button', { name: 'Start voice' }).click();
   await expect(page.locator('.error[role="alert"]')).toContainText('Allow microphone access');
   expect(creates).toBe(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -120,4 +125,65 @@ test('the real proxy accepts the browser host and rejects a foreign origin', asy
     data: {},
   });
   expect(rejected.status()).toBe(403);
+});
+
+test('system theme changes immediately and mobile utility panels collapse', async ({ page }) => {
+  await mockControl(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto('/');
+  const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  expect(await background()).toBe('rgb(255, 255, 255)');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect.poll(background).toBe('rgb(33, 33, 33)');
+  const recent = page.getByLabel('Recent sessions', { exact: true }).first();
+  const services = page.getByLabel('Services', { exact: true });
+  await recent.click();
+  await expect(page.getByRole('button', { name: /normal-sessi/ })).toBeVisible();
+  await services.click();
+  await expect(page.getByRole('button', { name: /normal-sessi/ })).toBeHidden();
+  await expect(page.getByLabel('Backend services')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByLabel('Backend services')).toBeHidden();
+  await expect(services).toBeFocused();
+  await recent.click();
+  await page.getByRole('textbox', { name: 'Message', exact: true }).click();
+  await expect(page.getByRole('button', { name: /normal-sessi/ })).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/demo-dark-mobile.png' });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.screenshot({ path: 'test-results/demo-light-desktop.png' });
+});
+
+test('user pauses share a bubble until an actual assistant message appears', async ({ page }) => {
+  await mockControl(page);
+  await page.route('**/api/control/sessions/normal-session/history?**', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { id: 'u1', type: 'message', role: 'user', content: ['First fragment'] },
+          { id: 'empty', type: 'message', role: 'assistant', content: ['  '] },
+          { id: 'u2', type: 'message', role: 'user', content: ['Second fragment'] },
+          { id: 'a1', type: 'message', role: 'assistant', content: ['An actual reply'] },
+          { id: 'u3', type: 'message', role: 'user', content: ['Another turn'] },
+          { id: 'u3', type: 'message', role: 'user', content: ['Another turn, revised'] },
+        ],
+      },
+    }),
+  );
+  await page.goto('/');
+  await page.getByLabel('Recent sessions', { exact: true }).first().click();
+  await page.getByRole('button', { name: /normal-sessi/ }).click();
+  await expect(page.locator('.message.user')).toHaveCount(2);
+  await expect(page.locator('.message.user').first()).toHaveText('First fragment\nSecond fragment');
+  await expect(page.locator('.message.user').last()).toHaveText('Another turn, revised');
+  await expect(page.locator('.message.assistant')).toHaveCount(1);
+  const styles = await page.locator('.message.assistant').evaluate((element) => ({
+    border: getComputedStyle(element).borderWidth,
+    background: getComputedStyle(element).backgroundColor,
+  }));
+  expect(styles).toEqual({ border: '0px', background: 'rgba(0, 0, 0, 0)' });
+  await page.locator('.message.assistant').click();
+  await page.screenshot({ path: 'test-results/demo-transcript-desktop.png' });
 });

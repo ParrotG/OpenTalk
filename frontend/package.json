@@ -20,6 +20,7 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "livekit-client": "2.22.2",
+    "lucide-react": "0.555.0",
     "motion": "12.16.0",
     "next": "15.5.18",
     "react": "19.1.1",

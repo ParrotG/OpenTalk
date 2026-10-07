@@ -1,13 +1,21 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
 import { RoomEvent, TokenSource } from 'livekit-client';
 import { useAgent, useSession, useSessionMessages, useStartAudio } from '@livekit/components-react';
 import { AgentSessionProvider } from '@/components/agents-ui/agent-session-provider';
 import { AgentAudioVisualizerWave } from '@/components/agents-ui/agent-audio-visualizer-wave';
+import { Composer } from '@/components/composer';
 import { Allocation, Message, SavedSession, control, errorMessage, sleep } from '@/lib/control';
 
+export type ConversationHandle = { end: () => Promise<void> };
+
 type Props = {
+  ref?: Ref<ConversationHandle>;
+  initialVoice: boolean;
+  initialText: string;
+  draft: string;
+  onDraft: (value: string) => void;
   allocation: Allocation;
   previous: Message[];
   onMessages: (messages: Message[]) => void;
@@ -15,14 +23,35 @@ type Props = {
   onFinish: (saved: SavedSession, messages: Message[], failure?: string) => Promise<void>;
 };
 
-export function LiveConversation({ allocation, previous, onMessages, onStatus, onFinish }: Props) {
+export function LiveConversation({
+  ref,
+  allocation,
+  previous,
+  initialVoice,
+  initialText,
+  draft,
+  onDraft,
+  onMessages,
+  onStatus,
+  onFinish,
+}: Props) {
   const tokenSource = useMemo(() => TokenSource.literal(allocation), [allocation]);
   const session = useSession(tokenSource, { agentConnectTimeoutMilliseconds: 45000 });
   const agent = useAgent(session);
-  const { messages } = useSessionMessages(session);
+  const { messages, send, isSending } = useSessionMessages(session);
   const { canPlayAudio, mergedProps } = useStartAudio({ room: session.room, props: {} });
   const [phase, setPhase] = useState<'connecting' | 'connected' | 'ending'>('connecting');
-  const [muted, setMuted] = useState(false);
+  const [voice, setVoice] = useState(initialVoice);
+  const [micBusy, setMicBusy] = useState(false);
+  const microphoneBusy = useRef(false);
+  const queuedText = useRef(initialText);
+  const initialMicrophone = useRef(initialVoice);
+  const sendMessage = useRef(send);
+  sendMessage.current = send;
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
+  const updateDraft = useRef(onDraft);
+  updateDraft.current = onDraft;
   const [error, setError] = useState('');
   const [endBusy, setEndBusy] = useState(false);
   const endInFlight = useRef(false);
@@ -36,16 +65,21 @@ export function LiveConversation({ allocation, previous, onMessages, onStatus, o
   actions.current = { start: session.start, end: session.end };
   const startAbort = useRef<AbortController | null>(null);
   const baseline = useRef(previous);
+  const liveMessages = useRef(new Map<string, Message>());
 
   useEffect(() => {
     // The SDK updates partial transcripts by ID. Keep each logical message only once.
-    const live = new Map<string, Message>();
-    for (const message of messages)
+    const live = liveMessages.current;
+    for (const message of messages.slice(-200)) {
+      // An empty assistant stream must not split a user turn before text arrives.
+      if (!message.message.trim()) continue;
       live.set(message.id, {
         id: message.id,
         role: message.from?.isLocal ? 'user' : 'assistant',
         text: message.message,
       });
+    }
+    while (live.size > 200) live.delete(live.keys().next().value!);
     const combined = [...baseline.current, ...live.values()].slice(-200);
     latestMessages.current = combined;
     callbacks.current.onMessages(combined);
@@ -63,11 +97,12 @@ export function LiveConversation({ allocation, previous, onMessages, onStatus, o
         await session.room.startAudio().catch(() => {});
         await actions.current.start({
           signal: abort.signal,
-          tracks: { microphone: { enabled: true } },
+          tracks: { microphone: { enabled: initialMicrophone.current } },
         });
         if (!disposed && !ending.current) setPhase('connected');
       } catch (error) {
         if (disposed || ending.current) return;
+        if (queuedText.current) updateDraft.current(queuedText.current);
         ending.current = true;
         setPhase('ending');
         const cause = errorMessage(error);
@@ -158,7 +193,7 @@ export function LiveConversation({ allocation, previous, onMessages, onStatus, o
     // Aborting connection would disconnect before checkpointing, so stop only input here.
     try {
       await session.room.localParticipant.setMicrophoneEnabled(false);
-      setMuted(true);
+      setVoice(false);
       await control(`sessions/${allocation.session.session_id}/end`, {
         attempt_id: allocation.session.attempt_id,
       });
@@ -197,65 +232,95 @@ export function LiveConversation({ allocation, previous, onMessages, onStatus, o
     }
   }
 
-  async function toggleMicrophone() {
+  useImperativeHandle(ref, () => ({ end }));
+
+  useEffect(() => {
+    if (phase !== 'connected' || !queuedText.current) return;
+    const text = queuedText.current;
+    // Claim the queued message before sending so effect replays cannot send it twice.
+    queuedText.current = '';
+    void sendMessage.current(text).catch((error) => {
+      updateDraft.current(text);
+      setError(`Message could not be sent: ${errorMessage(error)}`);
+    });
+  }, [phase]);
+
+  async function sendDraft() {
+    const text = draft.trim();
+    if (!text || phase !== 'connected' || isSending) return;
+    setError('');
     try {
-      await session.room.localParticipant.setMicrophoneEnabled(muted);
-      setMuted(!muted);
+      await send(text);
+      if (latestDraft.current === draft) onDraft('');
+    } catch (error) {
+      setError(`Message could not be sent: ${errorMessage(error)}`);
+    }
+  }
+
+  async function toggleVoice() {
+    if (microphoneBusy.current || phase !== 'connected') return;
+    microphoneBusy.current = true;
+    setMicBusy(true);
+    setError('');
+    try {
+      await session.room.localParticipant.setMicrophoneEnabled(!voice);
+      if (ending.current) {
+        // A permission prompt may resolve after the user has already ended the session.
+        await session.room.localParticipant.setMicrophoneEnabled(false);
+      } else {
+        setVoice(!voice);
+      }
     } catch (error) {
       setError(`Microphone update failed: ${errorMessage(error)}`);
+    } finally {
+      microphoneBusy.current = false;
+      setMicBusy(false);
     }
   }
 
   return (
-    <AgentSessionProvider session={session}>
-      <section className="voice-panel" aria-label="Voice controls">
-        <div className="voice-top">
-          <span className="eyebrow">VOICE</span>
-          <span className="voice-state" role="status">
-            {phase === 'ending'
-              ? 'Saving session…'
-              : phase === 'connecting'
-                ? 'Connecting…'
-                : agent.state}
-          </span>
-        </div>
-        <AgentAudioVisualizerWave
-          className="wave"
-          state={agent.state}
-          audioTrack={agent.microphoneTrack}
-          color="#86E9BE"
-        />
-        <div className="voice-bottom">
-          <span className="voice-hint">
-            {phase === 'connected'
-              ? 'Speak to interrupt. Your transcript updates live.'
-              : 'Waiting for the agent…'}
-          </span>
-          <div className="voice-buttons">
-            <button
-              className="mic-button"
-              disabled={phase !== 'connected'}
-              aria-pressed={muted}
-              onClick={() => void toggleMicrophone()}
-            >
-              {muted ? 'Unmute mic' : 'Mute mic'}
-            </button>
-            <button className="end-button" disabled={endBusy} onClick={() => void end()}>
-              End conversation
-            </button>
-          </div>
-        </div>
-        {!canPlayAudio && (
-          <button {...mergedProps} className="audio-unlock">
-            Enable audio playback
-          </button>
-        )}
-        {error && (
-          <p className="voice-error" role="alert">
-            {error}
-          </p>
-        )}
-      </section>
+    <AgentSessionProvider session={session} muted={!voice}>
+      <Composer
+        draft={draft}
+        onDraft={onDraft}
+        onSend={() => void sendDraft()}
+        onVoice={() => void toggleVoice()}
+        voice={voice}
+        disabled={phase !== 'connected' || endBusy || micBusy}
+        sending={isSending}
+        visualizer={
+          <>
+            <AgentAudioVisualizerWave
+              className="wave"
+              state={agent.state}
+              audioTrack={agent.microphoneTrack}
+              color="#84B6F4"
+            />
+            <span className="voice-state" role="status">
+              {phase === 'ending'
+                ? 'Saving session…'
+                : phase === 'connecting'
+                  ? 'Connecting…'
+                  : agent.state}
+            </span>
+          </>
+        }
+      />
+      {!voice && phase !== 'connected' && (
+        <p className="composer-status" role="status">
+          {phase === 'ending' ? 'Saving session…' : 'Connecting…'}
+        </p>
+      )}
+      {voice && !canPlayAudio && (
+        <button {...mergedProps} className="text-button audio-unlock">
+          Enable audio playback
+        </button>
+      )}
+      {error && (
+        <p className="voice-error" role="alert">
+          {error}
+        </p>
+      )}
     </AgentSessionProvider>
   );
 }
