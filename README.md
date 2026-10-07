@@ -72,7 +72,7 @@ Live tests are skipped by default even when credentials exist. Current tests use
 
 ## Agent tools and reasoning
 
-`ConversationAgent` in `backend/opentalk/agents/base.py` owns native session hooks, language preference, stale-response checks, logging, and the generic `escalate_reasoning` tool. `BookingAgent` subclasses it and adds exactly two business tools:
+`ConversationAgent` in `backend/opentalk/agents/base.py` owns native session hooks, language preference, stale-response checks, logging, and the generic `escalate_reasoning` tool. `BookingAgent` subclasses it and adds exactly two business tools. System instructions require concise spoken language and exclude tables, emoji, Markdown, code blocks, and visual lists from user-facing replies. Prompts do not mention timezone or region:
 
 - `query(sql)`: one read-only SQLite statement, including SELECT, joins, CTEs, aggregates, schema discovery, and date-range searches. A read-only connection and SQLite authorizer reject writes, ATTACH, PRAGMA, transaction control, and extension loading. Configurable row, execution-step, and time limits bound queries; truncated results are explicitly marked.
 - `edit(action, room, starts_at, ends_at, new_room?, new_starts_at?, new_ends_at?)`: add a reservation, cancel a matching reservation, or atomically move it to a replacement interval. It can create an interval that was not seeded. Cancellation retains historical records. Updates preserve the booking ID. Offset-free timestamps use the configured timezone; timestamps are stored in UTC.

@@ -19,7 +19,7 @@ class BookingAgent(ConversationAgent):
         )
 
     def runtime_context(self):
-        return (super().runtime_context() + f" Local timezone: {self.booking_tools.service.timezone.key}. "
+        return (super().runtime_context() + " "
                 f"Configured rooms: {list(self.booking_tools.rooms)}.")
 
     @function_tool()
@@ -36,7 +36,7 @@ class BookingAgent(ConversationAgent):
 
         Identify the original reservation by room and ISO start/end timestamps.
         Add reserves that interval; delete cancels it; update moves it to replacement
-        values (omitted replacements preserve the original). Naive times are local.
+        values (omitted replacements preserve the original).
         """
         return await self.execute(context, "edit", lambda: self.booking_tools.edit(
             action, room, starts_at, ends_at, new_room=new_room,

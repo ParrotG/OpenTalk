@@ -6,6 +6,15 @@ from datetime import UTC, datetime
 from livekit.agents import Agent, RunContext, function_tool, llm
 
 
+VOICE_INSTRUCTIONS = (
+    " You are a voice assistant. Respond in natural conversational language suitable "
+    "for speaking aloud. Use short, clear sentences and verbal transitions. Do not use "
+    "tables, emoji, Markdown formatting, code blocks, or visual bullet lists in user-facing "
+    "responses. Summarize options verbally and ask a brief follow-up question when needed. "
+    "Keep SQL and structured arguments inside tool calls rather than reading them aloud."
+)
+
+
 class ConversationAgent(Agent):
     def __init__(self, *, instructions, journal, reasoning_model=None, reasoning_options=None, clock=None):
         self.journal = journal
@@ -17,7 +26,7 @@ class ConversationAgent(Agent):
         self._execution_lock = asyncio.Lock()
         self._reasoning_turn = None
         self.preferred_response_language = None
-        super().__init__(instructions=instructions + (
+        super().__init__(instructions=instructions + VOICE_INSTRUCTIONS + (
             " Follow the user's language and explicit response language preferences. "
             "For a difficult task, use escalate_reasoning after briefly telling the user "
             "you are checking it. Give the tool a self-contained task and relevant facts. "
@@ -26,7 +35,7 @@ class ConversationAgent(Agent):
         ))
 
     def runtime_context(self):
-        return f"Current date and time: {self.clock().isoformat()}."
+        return f"Current date and time: {self.clock():%Y-%m-%d %H:%M:%S}."
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         user = next((item for item in reversed(chat_ctx.items)
@@ -106,7 +115,8 @@ class ConversationAgent(Agent):
             analysis = llm.ChatContext()
             analysis.add_message(role="system", content=(
                 "Analyze the supplied task and facts. Return a concise actionable conclusion, "
-                "not a chain of thought. You cannot access tools or change data. " + self.runtime_context()
+                "not a chain of thought. You cannot access tools or change data. "
+                + VOICE_INSTRUCTIONS + " " + self.runtime_context()
             ))
             analysis.add_message(role="user", content=task)
             parts = []
