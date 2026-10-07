@@ -1,6 +1,6 @@
 """Typed booking records and stable business errors."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class BookingError(Exception):
@@ -17,6 +17,24 @@ class Slot:
     room: str
     starts_at: str
     ends_at: str
+    resource_id: str = ""
+
+
+@dataclass(frozen=True)
+class User:
+    uid: str
+    name: str
+    department: str
+
+
+@dataclass(frozen=True)
+class Resource:
+    rid: str
+    name: str
+    type: str
+    location: str
+    capacity: int
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -32,7 +50,6 @@ class Booking:
 class Operation:
     operation_id: str
     user_id: str
-    session_id: str
     kind: str
     target_id: str
     version: int
@@ -40,3 +57,4 @@ class Operation:
     result: Booking | None
     error_code: str | None
     supersedes: str | None = None
+    request: dict | None = None

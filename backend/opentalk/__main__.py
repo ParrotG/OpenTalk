@@ -1,6 +1,7 @@
 """A local CLI for exercising the booking backend without model credentials."""
 
 import argparse
+import asyncio
 import json
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, time, timedelta
@@ -11,6 +12,7 @@ from opentalk.config import load_config
 from opentalk.domain.booking_service import BookingService
 from opentalk.domain.models import BookingError
 from opentalk.storage.repository import BookingRepository
+from opentalk.storage.admin import check, initialize_demo, inspect
 
 
 def encode(value):
@@ -23,7 +25,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Exercise the OpenTalk booking backend.")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--database", type=Path, help="Override the configured database path.")
-    parser.add_argument("--session", default="demo-session")
+    parser.add_argument("--session", help="Deprecated compatibility option; business operations are user-scoped.")
     commands = parser.add_subparsers(dest="command", required=True)
     seed = commands.add_parser("seed", help="Create configured slots for an explicit date.")
     seed.add_argument("--date", type=date.fromisoformat, required=True)
@@ -42,17 +44,42 @@ def main() -> int:
     cancel = commands.add_parser("cancel")
     cancel.add_argument("booking_id")
     cancel.add_argument("--operation-id", required=True)
-    commands.add_parser("events")
+    commands.add_parser("operations", help="List the current user's business operations.")
+    admin = commands.add_parser("admin", help="Initialize and inspect local business data as an administrator.")
+    administrative = admin.add_subparsers(dest="admin_command", required=True)
+    initialize = administrative.add_parser("init", help="Idempotently seed users, resources, intervals and occupancy.")
+    initialize.add_argument("--start-date", type=date.fromisoformat)
+    initialize.add_argument("--days", type=int, default=7)
+    initialize.add_argument("--fixture", type=Path)
+    inspection = administrative.add_parser("inspect", help="Inspect the schema or a business table/view.")
+    inspection.add_argument("--table")
+    inspection.add_argument("--limit", type=int, default=100)
+    administrative.add_parser("check", help="Check integrity, references, capacity and duplicate bookings.")
+    administrative.add_parser("migrate", help="Migrate an old business database, keeping a pre-migration backup.")
+    administrative.add_parser("query", help="Run one read-only administrator SQL query.").add_argument("sql")
     commands.add_parser("smoke", help="Run a booking lifecycle against the selected database.")
     args = parser.parse_args()
 
     try:
         config = load_config(args.config)
+        repository = BookingRepository(args.database or config.database_path)
         service = BookingService(
-            BookingRepository(args.database or config.database_path),
-            user_id=config.demo_user_id, session_id=args.session, timezone=config.timezone,
+            repository, user_id=config.demo_user_id, timezone=config.timezone,
         )
-        if args.command == "seed":
+        if args.command == "admin":
+            if args.admin_command == "init":
+                result = initialize_demo(repository, config, start_date=args.start_date,
+                                         days=args.days, fixture_path=args.fixture)
+            elif args.admin_command == "inspect":
+                result = inspect(repository, args.table, args.limit)
+            elif args.admin_command == "check":
+                result = check(repository)
+            elif args.admin_command == "query":
+                from opentalk.tools.database_tools import DatabaseTools
+                result = asyncio.run(DatabaseTools(service).query(args.sql))
+            else:
+                result = {"status": "migrated", **inspect(repository)}
+        elif args.command == "seed":
             result = [service.seed_slot(
                 room,
                 datetime.combine(args.date, time(hour), service.timezone),
@@ -73,8 +100,8 @@ def main() -> int:
             result = service.invalidate_operation(args.id)
         elif args.command == "cancel":
             result = service.cancel_booking(args.booking_id, args.operation_id)
-        elif args.command == "events":
-            result = service.list_events()
+        elif args.command == "operations":
+            result = service.list_operations()
         else:
             # Use a dedicated room so repeated runs do not clash with normal demo slots.
             day = datetime.now(service.timezone).date() + timedelta(days=1)
@@ -90,8 +117,8 @@ def main() -> int:
                 raise RuntimeError("Cancellation was not persisted.")
             result = {"status": "passed", "booking": booking, "cancellation": cancelled}
         print(json.dumps(result, default=encode, ensure_ascii=False, indent=2))
-        return 0
-    except (BookingError, ValueError) as error:
+        return 1 if isinstance(result, dict) and result.get("ok") is False else 0
+    except (BookingError, ValueError, OSError) as error:
         print(json.dumps({"error": getattr(error, "code", "invalid_configuration"),
                           "message": str(error)}))
         return 1

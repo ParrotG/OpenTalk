@@ -36,3 +36,21 @@ def test_config_and_missing_configuration(tmp_path):
     invalid.write_text(text.replace("[9, 10, 14, 15]", "[9, 9]"), encoding="utf-8")
     with pytest.raises(ValueError, match="Slot start hours"):
         load_config(invalid)
+
+
+def test_admin_initialization_inspection_queries_and_integrity(tmp_path):
+    prefix = [sys.executable, "-m", "opentalk", "--database", str(tmp_path / "admin.sqlite3"), "admin"]
+    environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "backend")}
+    def invoke(*arguments):
+        process = subprocess.run(prefix + list(arguments), env=environment, cwd=tmp_path,
+                                 capture_output=True, text=True)
+        return process.returncode, json.loads(process.stdout)
+    code, first = invoke("init", "--start-date", "2030-01-02", "--days", "1")
+    assert code == 0 and first["new_occupancies"] == 7
+    assert invoke("init", "--start-date", "2030-01-02", "--days", "1")[1]["new_occupancies"] == 0
+    assert len(invoke("inspect", "--table", "users")[1]["rows"]) == 4
+    assert invoke("check")[1]["ok"]
+    assert invoke("query", "SELECT name, capacity FROM resources ORDER BY name")[1]["ok"]
+    assert invoke("query", "DELETE FROM users")[0] == 1
+    assert invoke("inspect", "--table", "resources; DROP TABLE users")[0] == 1
+    assert invoke("inspect")[1]["counts"]["slot_users"] == 7

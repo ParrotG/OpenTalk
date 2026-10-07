@@ -153,21 +153,22 @@ def test_restored_tool_receipts_do_not_execute_again(tmp_path):
     from opentalk.voice.factories import agent_factory
     service = BookingService(BookingRepository(tmp_path / "booking.sqlite3"),
                              clock=lambda: datetime(2030, 1, 1, tzinfo=UTC))
-    model = ScriptedLLM({"Go ahead": ("edit", {"action": "add", "room": "Room A",
+    service.seed_resource("Room A")
+    model = ScriptedLLM({"Go ahead": ("edit", {"action": "add", "resource": "Room A",
                         "starts_at": "2030-01-02T09:00", "ends_at": "2030-01-02T10:00"})})
     async def scenario():
         async with open_session(text_only=True, factory=agent_factory(service=service), model=model) as (session, agent, journal):
             await session.start(agent=agent)
             await session.run(user_input="Go ahead")
             session_id = session.userdata.session_id
-        assert len(service.list_events()) == 1
+        assert len(service.list_operations()) == 1
         restored = ScriptedLLM()
         async with open_session(text_only=True, resume_id=session_id,
                                 factory=agent_factory(service=service), model=restored) as (session, agent, journal):
             await session.start(agent=agent)
             assert any(item.type == "function_call_output" for item in agent.chat_ctx.items)
             await session.run(user_input="Hello again")
-        assert len(service.list_events()) == 1
+        assert len(service.list_operations()) == 1
         history = journal.store.history(session_id)["items"]
         assert len([item for item in history if item["type"] == "function_call"]) == 1
         assert len([item for item in history if item["type"] == "function_call_output"]) == 1

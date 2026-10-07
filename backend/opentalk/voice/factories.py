@@ -27,8 +27,6 @@ def agent_factory(agent_key="booking", *, backend_config=None, service=None):
             booking_service = await asyncio.to_thread(
                 lambda: BookingService(BookingRepository(config.database_path),
                                        user_id=config.demo_user_id,
-                                       session_id=options["state"].session_id, timezone=config.timezone))
-        else:
-            booking_service.session_id = options["state"].session_id
-        return BookingAgent(DatabaseTools(booking_service, config.rooms), **options)
+                                       timezone=config.timezone))
+        return BookingAgent(DatabaseTools(booking_service), **options)
     return booking

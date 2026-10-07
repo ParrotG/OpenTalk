@@ -1,1 +1,1 @@
-"""Persistent storage for booking operations and audit events."""
+"""Persistent business storage for users, resources, reservations and operations."""

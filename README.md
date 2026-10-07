@@ -34,7 +34,7 @@ ASR, LLM, and TTS providers will be independently configurable. A local implemen
 
 ## Configuration and secrets
 
-Public backend settings are in `config/backend.toml`: database path, timezone (default `Asia/Singapore`), fixed demo user, rooms, and seed schedule. `config/booking_prompt.md` contains the booking instructions; `config/booking_agent.toml` contains read-query resource limits. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. `config/asr.toml` configures the Soniox endpoint, model, language hints, sample rate, endpoint delay, and file replay settings.
+Public backend settings are in `config/backend.toml`: database path, timezone (default `Asia/Singapore`), fixed demo user and seed schedule. `config/booking_demo.json` describes users, resources and initial occupancy; resource discovery comes from SQLite rather than a configured room allowlist. `config/booking_prompt.md` contains the booking instructions; `config/booking_agent.toml` contains read-query resource limits. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. `config/asr.toml` configures the Soniox endpoint, model, language hints, sample rate, endpoint delay, and file replay settings.
 
 The LLM, ASR, and TTS factories load secrets from the root `.env.local` file or process environment variables. Process environment variables take precedence. The Python application explicitly loads the root file, independently of the working directory. `config/tts.toml` configures the synthesis endpoint, model, voice, primary language, sample rate, speed, timeouts, and simulated text input settings.
 
@@ -72,14 +72,14 @@ Live tests are skipped by default even when credentials exist. Current tests use
 
 ## Agent tools and reasoning
 
-`ConversationAgent` in `backend/opentalk/agents/base.py` owns native session hooks, language preference, stale-response checks, logging, and the generic `escalate_reasoning` tool. `BookingAgent` subclasses it and adds exactly two business tools. System instructions require concise spoken language and exclude tables, emoji, Markdown, code blocks, and visual lists from user-facing replies. Prompts do not mention timezone or region:
+`ConversationAgent` in `backend/opentalk/agents/base.py` owns native session hooks, language preference, stale-response checks, logging, and the generic `escalate_reasoning` tool. `BookingAgent` subclasses it and adds exactly two business tools. System instructions require concise spoken language and exclude tables, emoji, Markdown, code blocks, and visual lists from user-facing replies. Runtime context supplies the trusted current UID and business timezone:
 
 - `query(sql)`: one read-only SQLite statement, including SELECT, joins, CTEs, aggregates, schema discovery, and date-range searches. A read-only connection and SQLite authorizer reject writes, ATTACH, PRAGMA, transaction control, and extension loading. Configurable row, execution-step, and time limits bound queries; truncated results are explicitly marked.
-- `edit(action, room, starts_at, ends_at, new_room?, new_starts_at?, new_ends_at?)`: add a reservation, cancel a matching reservation, or atomically move it to a replacement interval. It can create an interval that was not seeded. Cancellation retains historical records. Updates preserve the booking ID. Offset-free timestamps use the configured timezone; timestamps are stored in UTC.
+- `edit(action, resource, starts_at, ends_at, new_resource?, new_starts_at?, new_ends_at?, uid?)`: add a reservation, cancel a matching reservation, or atomically move it to a replacement interval. It can create an interval that was not seeded. Cancellation retains historical records. Updates preserve the booking ID. Offset-free timestamps use the configured timezone; timestamps are stored in UTC.
 
-The prompt asks the assistant to describe the exact change and obtain agreement in a later user turn before calling edit. Ordinary agreement is accepted; there are no fixed confirmation words, host-generated recaps, proposal-version grants, or separate confirmation tools. Confirmation is an LLM conversation policy, not a deterministic authorization guarantee. All local demo data is queryable; there is no authentication or per-user restriction in these tools.
+The prompt asks the assistant to describe the exact change and obtain agreement in a later user turn before calling edit. Ordinary agreement is accepted; there are no fixed confirmation words, host-generated recaps, proposal-version grants, or separate confirmation tools. Confirmation is an LLM conversation policy, not a deterministic authorization guarantee. All local business data is queryable. There is no login flow; the configured fixed UID determines ownership. The backend independently rejects edits of another user’s bookings, including attempts to supply a different UID.
 
-Edits validate intervals and reject overlapping active reservations. A host-generated request key combines session, user turn, and normalized edit arguments, so repeated identical calls within a turn return the committed result. Writes and audit events commit together. Already started writes finish and are recorded when speech is interrupted; stale calls are rejected before execution. SQLite schema and legacy booking CLI remain compatible, but the old seven-tool interface is not exposed to the current agent.
+Edits validate future intervals, known resources, caller ownership, own overlapping bookings and peak concurrent resource capacity. Each reservation consumes one capacity unit, and adjacent intervals do not conflict. A request key binds the user turn and native tool call; a retry returns the original outcome, and changed arguments with the same key are rejected. Business changes and operation outcomes commit together; failed moves preserve the original booking. Already started writes finish when speech is interrupted, and stale calls are rejected before execution. Legacy prepare/confirm commands use the same ownership and capacity rules; the old seven-tool interface is not exposed to the current agent.
 
 The default profile disables thinking. `escalate_reasoning(task, message?)` delivers a brief acknowledgement and makes one isolated streaming analysis request with the configurable `[reasoning]` profile in `config/llm.toml`. The current profile uses the same model, thinking enabled, `reasoning_effort = "high"`, an 8192-token limit, and a 60-second timeout. It returns the answer content, not the reasoning trace, and the default agent continues with query/edit. It is limited to one escalation per user turn and never changes the shared/default provider settings.
 
@@ -218,6 +218,45 @@ The Services panel checks session storage, authenticated LiveKit connectivity, w
 
 See the Chinese [browser validation guide](docs/网页语音验证指南.md) for staged tests, independent test databases, actual browser integration results, configuration overrides, and physical microphone checks. Docker is deferred to the next phase.
 
+## Booking database administration
+
+The business database now has five tables, independent of LiveKit or agent sessions:
+
+| Table | Purpose |
+| --- | --- |
+| `users(uid, name, department)` | User directory; the demo always acts as configured `demo_user_id`. |
+| `resources(rid, name, type, location, capacity, metadata)` | Resource directory, per-person concurrent capacity and JSON descriptions. |
+| `slots(sid, rid, starts_at, ends_at)` | Time intervals stored in canonical UTC. |
+| `slot_users(booking_id, sid, uid, operation_id, status, created_at, updated_at)` | User reservations; cancellation retains the row, and moving preserves `booking_id`. |
+| `operations(...)` | Durable requests, versions, successful snapshots and failed outcomes. |
+
+The `reservations` view joins user/resource descriptions. `slot_availability` reports peak occupancy and remaining capacity over each interval; it accounts for partial overlaps. Read queries may inspect everyone’s bookings, while edits only affect the configured current user. An individual booking consumes one capacity unit; metadata may describe physical seating separately. Slots are discoverable examples, not an opening-hours restriction, so an edit may create a different future interval on an existing resource.
+
+Run local administrator commands from the project root; they need no model credentials:
+
+```bash
+# Initialize a seven-day period starting tomorrow in the business timezone.
+PYTHONPATH=backend uv run --locked python -m opentalk admin init
+# Or choose an explicit future period and optional JSON fixture.
+PYTHONPATH=backend uv run --locked python -m opentalk admin init --start-date 2030-01-02 --days 7
+PYTHONPATH=backend uv run --locked python -m opentalk admin inspect
+PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table users
+PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table resources
+PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table reservations --limit 200
+PYTHONPATH=backend uv run --locked python -m opentalk admin query "SELECT resource_name, uid, starts_at, ends_at FROM reservations WHERE status='active' ORDER BY starts_at"
+PYTHONPATH=backend uv run --locked python -m opentalk admin check
+# The initializer and all normal entrypoints also migrate an older database.
+PYTHONPATH=backend uv run --locked python -m opentalk admin migrate
+```
+
+`admin check` checks SQLite integrity, foreign keys, capacity and overlapping bookings of the same user/resource. `admin query` is read-only. These are trusted local administrator commands, not an authentication mechanism or agent tools. Add `--database /tmp/opentalk-case.sqlite3` before `admin` to inspect or initialize an isolated database; the text agent’s `--config` can point to a matching copied backend configuration.
+
+On a fresh database, the default profile creates Alice (`demo-user`), Bob, Chen and Dina; Room A (capacity 1), Room B (2), Desk Zone (3) and Projector 1 (1). It initializes the configured 09:00, 10:00, 14:00 and 15:00 intervals each day with partial occupancy, including one reservation of Alice’s. A seven-day fixture contains 112 slots and 49 reservations/operations. Repeating initialization of the same period neither duplicates reservations nor resurrects cancelled ones; existing bookings are not replaced, and conflicting fixture entries are reported in `skipped`. Use a fresh database file for repeatable test baselines.
+
+Old databases migrate transactionally on first use. A consistent `DATABASE.pre-resources-v1.bak` backup is kept first; bookings, IDs and business operation outcomes are preserved, while `events` and the operation `session_id` column are removed. Backup files retain the historical schema and are not used by the running service. Stop the old booking worker before explicitly migrating/initializing its database, then restart it so tools and schema use the same version. Existing session history and telemetry databases are untouched.
+
+See [Booking Service natural-language test cases](docs/BookingService自然语言测试用例.md) for normal, complex, ambiguous, unreasonable and multilingual scenarios, setup and state assertions.
+
 ## Legacy booking CLI
 
 This CLI retains the original prepare/confirm workflow for existing backend tests and manual inspection; it is not the current agent tool interface. Run these commands from the project root:
@@ -240,16 +279,16 @@ PYTHONPATH=backend uv run --locked python -m opentalk confirm proposal-1 --versi
 PYTHONPATH=backend uv run --locked python -m opentalk booking BOOKING_ID
 PYTHONPATH=backend uv run --locked python -m opentalk cancel BOOKING_ID --operation-id cancel-1
 PYTHONPATH=backend uv run --locked python -m opentalk operation proposal-1
-PYTHONPATH=backend uv run --locked python -m opentalk events
+PYTHONPATH=backend uv run --locked python -m opentalk operations
 ```
 
-Replace `SLOT_ID` and `BOOKING_ID` with IDs returned by earlier commands. CLI output is JSON; business errors have a stable `error` code and an English message. Global `--config`, `--database`, and `--session` options precede the command.
+Replace `SLOT_ID` and `BOOKING_ID` with IDs returned by earlier commands. CLI output is JSON; business errors have a stable `error` code and an English message. Global `--config` and `--database` options precede the command. The old `--session` flag is accepted for compatibility but has no business authorization or persistence effect.
 
 Preparing a proposal does not reserve a slot. To change an unconfirmed proposal, prepare another slot with a new operation ID and `--supersedes proposal-1`; the returned version must be used for confirmation. `invalidate OPERATION_ID` discards a pending proposal.
 
 Reuse the operation ID and unchanged arguments when retrying. Query `operation OPERATION_ID` after a lost response. Successful operations retain their original result snapshot, even if the booking is subsequently cancelled; use `booking BOOKING_ID` for its current state. Cancellation is an explicit CLI write command. The current conversation agent instead uses edit after natural-language confirmation.
 
-The service writes business state and operation events in one transaction. Confirmation conflicts and expiry persist a failed operation. This synchronous backend does not persist intermediate executing/unknown states; a caller with an unknown response can recover the committed outcome by operation ID. Slots are fixed, non-overlapping intervals per room. The booking CLI has no authentication flow; its fixed user and session are demo context, not production authentication. The independent session API and SQLite history store are described above. Provider metrics and diagnostics use a separate bounded telemetry database.
+The service writes business state and operations in one transaction. Confirmation conflicts and expiry persist a failed operation. A caller with an unknown response can recover the committed outcome by operation ID. Slots are half-open time intervals and may overlap; capacity is checked across all active reservations at every change point. The business database contains no agent events, session IDs, transcripts or metrics. Session history and provider diagnostics remain in their independent stores.
 
 ## Environment inspection
 

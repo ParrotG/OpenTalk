@@ -102,7 +102,7 @@ def test_tool_grants_validation_replacement_and_retry(tmp_path):
         cancelled = await tools.cancel_booking(booking_id)
         assert await tools.cancel_booking(booking_id) == cancelled
         assert service.get_booking(booking_id).status == "cancelled"
-        assert len(service.list_events()) == 5
+        assert len(service.list_operations()) == 3
     asyncio.run(scenario())
 
 

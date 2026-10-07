@@ -20,7 +20,9 @@ class BookingAgent(ConversationAgent):
 
     def runtime_context(self):
         return (super().runtime_context() + " "
-                f"Configured rooms: {list(self.booking_tools.rooms)}.")
+                f"Business timezone: {self.booking_tools.service.timezone}. "
+                f"Current user UID: {self.booking_tools.service.user_id}. "
+                "Resource descriptions and availability must be queried from the database.")
 
     @function_tool()
     async def query(self, context: RunContext, sql: str) -> dict:
@@ -29,17 +31,17 @@ class BookingAgent(ConversationAgent):
 
     @function_tool()
     async def edit(self, context: RunContext, action: Literal["add", "delete", "update"],
-                   room: str, starts_at: str, ends_at: str,
-                   new_room: str | None = None, new_starts_at: str | None = None,
-                   new_ends_at: str | None = None) -> dict:
+                   resource: str, starts_at: str, ends_at: str,
+                   new_resource: str | None = None, new_starts_at: str | None = None,
+                   new_ends_at: str | None = None, uid: str | None = None) -> dict:
         """Edit a reservation AFTER asking the user and receiving confirmation in a later turn.
 
-        Identify the original reservation by room and ISO start/end timestamps.
+        Identify your own original reservation by exact resource name/ID and ISO times.
         Add reserves that interval; delete cancels it; update moves it to replacement
         values (omitted replacements preserve the original).
         """
         return await self.execute(context, "edit", lambda: self.booking_tools.edit(
-            action, room, starts_at, ends_at, new_room=new_room,
+            action, resource, starts_at, ends_at, new_resource=new_resource,
             new_starts_at=new_starts_at, new_ends_at=new_ends_at,
-            request_id=self._speech_turns[context.speech_handle.id],
+            request_id=f"{self._speech_turns[context.speech_handle.id]}:{context.function_call.call_id}", uid=uid,
         ))

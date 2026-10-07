@@ -82,7 +82,7 @@ class TextHarness:
         payload = {"model": self.config.model, "turns": self.turns,
                    "tool_calls": self.calls,
                    "transcript": self.context.to_dict(exclude_timestamp=False),
-                   "operation_events": self.tools.service.list_events()}
+                   "operations": self.tools.service.list_operations()}
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)

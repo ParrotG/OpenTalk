@@ -43,13 +43,13 @@ def test_lifecycle_seed_retry_restart_and_cancel(service):
     # A lost response can be recovered after process restart without another write.
     assert restarted.get_operation("book-1").result == booking
     assert restarted.confirm_booking("book-1", 1) == booking
-    assert len(service.list_events()) == 2
+    assert len(service.list_operations()) == 1
     cancelled = restarted.cancel_booking(booking.booking_id, "cancel-1")
     assert cancelled.status == "cancelled"
     assert restarted.cancel_booking(booking.booking_id, "cancel-1") == cancelled
     assert restarted.get_booking(booking.booking_id) == cancelled
     assert restarted.list_available_slots(DAY) == [slot]
-    assert len(restarted.list_events()) == 3
+    assert len(restarted.list_operations()) == 2
     proposal2 = restarted.prepare_booking(slot.slot_id, "book-2")
     assert restarted.confirm_booking("book-2", proposal2.version).booking_id != booking.booking_id
 
@@ -85,7 +85,7 @@ def test_competing_confirmations_have_one_winner(service):
     assert sorted(op.status for op in operations) == ["failed", "succeeded"]
     failed = next(op for op in operations if op.status == "failed")
     assert_error("slot_unavailable", lambda: service.confirm_booking(failed.operation_id, 1))
-    assert len(service.list_events()) == 4
+    assert len(service.list_operations()) == 2
 
 
 def test_request_keys_and_ownership(service):
@@ -94,9 +94,9 @@ def test_request_keys_and_ownership(service):
     assert_error("idempotency_conflict", lambda: service.prepare_booking(second.slot_id, "same"))
     other = BookingService(service.repository, user_id="another-user", clock=lambda: NOW)
     assert_error("operation_not_found", lambda: other.get_operation("same"))
-    assert other.list_events() == []
+    assert other.list_operations() == []
     another_session = BookingService(service.repository, session_id="another-session", clock=lambda: NOW)
-    assert_error("operation_not_found", lambda: another_session.confirm_booking("same", 1))
+    assert another_session.get_operation("same") == service.get_operation("same")
     booking = service.confirm_booking("same", 1)
     assert_error("booking_not_found", lambda: other.cancel_booking(booking.booking_id, "cancel"))
     assert_error("idempotency_conflict", lambda: service.cancel_booking(booking.booking_id, "same"))
@@ -122,7 +122,7 @@ def test_slot_validation_and_local_date(service):
     slot = service.seed_slot("Room A", start, start + timedelta(hours=1))
     assert service.list_available_slots(DAY, "Room A") == [slot]
     assert service.list_available_slots(date(2030, 1, 1)) == []
-    assert_error("overlapping_slot", lambda: service.seed_slot(
-        "Room A", start + timedelta(minutes=30), start + timedelta(hours=2)))
+    overlapping = service.seed_slot("Room A", start + timedelta(minutes=30), start + timedelta(hours=2))
+    assert service.list_available_slots(DAY, "Room A") == [slot, overlapping]
     assert_error("invalid_time", lambda: service.seed_slot(
         "Room A", datetime(2030, 1, 2), datetime(2030, 1, 2, 1)))

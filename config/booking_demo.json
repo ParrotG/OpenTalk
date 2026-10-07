@@ -1,0 +1,21 @@
+{
+  "users": [
+    {"uid": "demo-user", "name": "Alice", "department": "Engineering"},
+    {"uid": "user-bob", "name": "Bob", "department": "Sales"},
+    {"uid": "user-chen", "name": "Chen", "department": "Research"},
+    {"uid": "user-dina", "name": "Dina", "department": "Engineering"}
+  ],
+  "resources": [
+    {"name": "Room A", "type": "meeting_room", "location": "Building A, Floor 2", "capacity": 1, "metadata": {"features": ["whiteboard", "video_conference"], "description": "Quiet meeting room"}},
+    {"name": "Room B", "type": "meeting_room", "location": "Building B, Floor 3", "capacity": 2, "metadata": {"features": ["whiteboard"], "description": "Shared meeting space"}},
+    {"name": "Desk Zone", "type": "desk", "location": "Building B, Floor 2", "capacity": 3, "metadata": {"features": ["power", "monitor"], "description": "Shared work area"}},
+    {"name": "Projector 1", "type": "equipment", "location": "Building A, Floor 1", "capacity": 1, "metadata": {"features": ["hdmi"], "description": "Portable projector"}}
+  ],
+  "occupancy": [
+    {"resource": "Room A", "hour": 9, "uids": ["user-bob"]},
+    {"resource": "Room A", "hour": 14, "uids": ["demo-user"]},
+    {"resource": "Room B", "hour": 9, "uids": ["user-bob"]},
+    {"resource": "Room B", "hour": 14, "uids": ["user-bob", "user-chen"]},
+    {"resource": "Desk Zone", "hour": 10, "uids": ["user-bob", "user-chen"]}
+  ]
+}

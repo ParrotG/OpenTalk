@@ -22,9 +22,9 @@ def test_sql_ranges_joins_ctes_schema_and_truncation(tmp_path):
     tools = make_tools(tmp_path)
 
     async def scenario():
-        result = await tools.query("WITH rooms AS (SELECT DISTINCT room FROM slots) SELECT * FROM rooms ORDER BY room")
+        result = await tools.query("WITH rooms AS (SELECT name AS room FROM resources) SELECT * FROM rooms ORDER BY room")
         assert [row["room"] for row in result["rows"]] == ["Room A", "Room B"]
-        assert (await tools.query("SELECT s.room FROM slots s LEFT JOIN bookings b USING(slot_id) WHERE b.booking_id IS NULL"))["ok"]
+        assert (await tools.query("SELECT r.name FROM resources r JOIN slots s USING(rid) LEFT JOIN slot_users b USING(sid) WHERE b.booking_id IS NULL"))["ok"]
         assert (await tools.query("SELECT name, sql FROM sqlite_master WHERE type='table'"))["ok"]
         tools.max_rows = 1
         result = await tools.query("SELECT * FROM slots ORDER BY starts_at")
@@ -61,14 +61,15 @@ def test_free_interval_add_update_delete_retries_and_audit(tmp_path):
         assert added["ok"] and added["booking"]["status"] == "active"
         assert (await tools.edit("add", *original, request_id="turn-1"))["replayed"]
         assert (await tools.edit("add", *original, request_id="another-turn"))["error"] == "slot_unavailable"
-        moved = await tools.edit("update", *original, new_room="Room B", new_starts_at="2030-01-03T14:00:00+08:00",
+        moved = await tools.edit("update", *original, new_resource="Room B", new_starts_at="2030-01-03T14:00:00+08:00",
                                  new_ends_at="2030-01-03T15:00:00+08:00", request_id="turn-2")
         assert moved["ok"] and moved["booking"]["booking_id"] == added["booking"]["booking_id"]
         deleted = await tools.edit("delete", "Room B", "2030-01-03T14:00:00", "2030-01-03T15:00:00", request_id="turn-3")
         assert deleted["ok"] and deleted["booking"]["status"] == "cancelled"
         assert (await tools.edit("delete", "Room B", "2030-01-03T14:00:00", "2030-01-03T15:00:00", request_id="turn-3"))["replayed"]
-        assert len(tools.service.list_events()) == 3
-        assert len((await tools.query("SELECT * FROM bookings"))["rows"]) == 1
+        assert len(tools.service.list_operations()) == 4
+        assert [operation.status for operation in tools.service.list_operations()] == ['succeeded', 'failed', 'succeeded', 'succeeded']
+        assert len((await tools.query("SELECT * FROM slot_users"))["rows"]) == 1
     asyncio.run(scenario())
 
 
@@ -84,7 +85,8 @@ def test_conflicting_update_rolls_back_original_booking(tmp_path):
                                   new_ends_at="2030-01-02T11:30:00", request_id="three")
         assert result["error"] == "slot_unavailable"
         assert tools.service.get_booking(added["booking"]["booking_id"]).slot_id == added["booking"]["slot_id"]
-        assert len(tools.service.list_events()) == 2
+        assert len(tools.service.list_operations()) == 3
+        assert tools.service.list_operations()[-1].status == 'failed'
     asyncio.run(scenario())
 
 
@@ -92,4 +94,4 @@ def test_invalid_intervals_and_missing_reservations(tmp_path):
     tools = make_tools(tmp_path)
     assert asyncio.run(tools.edit("add", "A", "invalid", "invalid", request_id="x"))["error"] == "invalid_time"
     assert asyncio.run(tools.edit("add", "A", "2030-01-02T11:00", "2030-01-02T10:00", request_id="x"))["error"] == "invalid_time"
-    assert asyncio.run(tools.edit("delete", "A", "2030-01-02T09:00", "2030-01-02T10:00", request_id="x"))["error"] == "reservation_not_found"
+    assert asyncio.run(tools.edit("delete", "Room A", "2030-01-02T09:00", "2030-01-02T10:00", request_id="x"))["error"] == "reservation_not_found"
