@@ -23,7 +23,7 @@ def test_room_token_idempotency_end_and_resume(monkeypatch):
                          api_key="test-key", api_secret="test-secret-012345678901234567890123456789")
         async with TestClient(TestServer(app)) as client:
             assert (await client.get("/health")).status == 200
-            payload = {"request_id": "create", "agent": "conversation"}
+            payload = {"request_id": "create", "agent": "conversation", "voice_enabled": False}
             response = await client.post("/sessions", json=payload)
             assert response.status == 200
             first = await response.json()
@@ -35,6 +35,7 @@ def test_room_token_idempotency_end_and_resume(monkeypatch):
             dispatch = claims.room_config.agents[0]
             assert dispatch.agent_name == "opentalk-booking"
             assert json.loads(dispatch.metadata)["attempt_id"] == saved["attempt_id"]
+            assert json.loads(dispatch.metadata)["voice_enabled"] is False
             second = await (await client.post("/sessions", json=payload)).json()
             assert second["session"]["session_id"] == saved["session_id"]
             assert len(store.list()) == 1
@@ -63,7 +64,8 @@ def test_api_invalid_requests_failed_restore_and_pagination():
     async def scenario():
         async with TestClient(TestServer(create_app(configuration=config, store=store,
                          api_key="test-key", api_secret="test-secret-012345678901234567890123456789"))) as client:
-            for payload in ({}, [], {"request_id": "x", "agent": "invalid"}):
+            for payload in ({}, [], {"request_id": "x", "agent": "invalid"},
+                            {"request_id": "bad-mode", "voice_enabled": "false"}):
                 assert (await client.post("/sessions", json=payload)).status == 400
             saved = store.reserve(request_id="failed")
             store.fail(saved["session_id"], saved["attempt_id"], "test_failure")

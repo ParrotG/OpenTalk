@@ -158,6 +158,7 @@ async def _run_session(*, text_only, voice_config, session_config, store, state,
                 journal.failed, journal.error_code = True, "shutdown_failed"
                 raise
             finally:
+                await journal.flush()
                 await journal.save()
     # Completion is visible only after every provider has closed successfully.
     await journal.save(status="failed" if journal.failed else "completed", error_code=journal.error_code)

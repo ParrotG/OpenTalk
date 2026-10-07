@@ -5,7 +5,7 @@ import json
 import os
 
 from dotenv import load_dotenv
-from livekit.agents import AgentServer, JobContext, JobProcess, cli
+from livekit.agents import AgentServer, JobContext, JobProcess, cli, room_io
 
 from opentalk.config import PROJECT_ROOT
 from opentalk.sessions.config import load_session_config
@@ -13,6 +13,7 @@ from opentalk.sessions.store import SessionStore
 from opentalk.voice.factories import agent_factory
 from opentalk.voice.config import load_voice_config
 from opentalk.voice.session import create_vad, open_session
+from opentalk.voice.room_control import RoomAudioMode, close_disconnected_session
 
 
 load_dotenv(PROJECT_ROOT / ".env.local", override=False)
@@ -37,6 +38,7 @@ async def entrypoint(context: JobContext):
                                     pending_seconds=session_config.token_ttl_seconds)
     reservation = None
     agent_key = "booking"
+    voice_enabled = True
     if context.job.metadata:
         metadata = json.loads(context.job.metadata)
         reservation = await asyncio.to_thread(store.get, metadata["session_id"])
@@ -45,13 +47,26 @@ async def entrypoint(context: JobContext):
                 or reservation["mode"] != "room"):
             raise ValueError("The job does not match the allocated session room and attempt.")
         agent_key = reservation["agent_key"]
+        voice_enabled = metadata.get("voice_enabled", True)
     async with open_session(voice_config=configuration, session_config=session_config,
                             store=store, reservation=reservation, agent_key=agent_key,
                             factory=agent_factory(agent_key), vad=context.proc.userdata.get("vad")) as (session, agent, journal):
-        await session.start(agent=agent, room=context.room)
         await context.connect()
-        if not reservation or not reservation["userdata"]:
-            session.say("Hello. How can I help you?")
+        identity = f"user-{session.userdata.attempt_id}" if reservation else None
+        mode = RoomAudioMode(session, enabled=voice_enabled)
+        agent.audio_mode = mode
+        if identity is not None:
+            mode.register(context.room, identity, wait_for_ready=True)
+        disconnect_tasks = set()
+
+        def disconnected(participant):
+            if identity is None or participant.identity != identity:
+                return
+            task = asyncio.create_task(close_disconnected_session(
+                session, journal, context.room, identity))
+            disconnect_tasks.add(task)
+            task.add_done_callback(disconnect_tasks.discard)
+
         # Keep resource ownership until the job is explicitly shut down.
         finished = asyncio.Event()
 
@@ -61,11 +76,29 @@ async def entrypoint(context: JobContext):
         context.add_shutdown_callback(shutdown)
         session.on("close", lambda event: finished.set())
 
-        await finished.wait()
+        context.room.on("participant_disconnected", disconnected)
+        try:
+            await session.start(agent=agent, room=context.room,
+                                room_options=room_io.RoomOptions(close_on_disconnect=identity is None,
+                                    text_output=room_io.TextOutputOptions(sync_transcription=False)))
+            mode.configure_outputs()
+            if not reservation or not reservation["userdata"]:
+                session.say("Hello. How can I help you?")
+            await finished.wait()
+        finally:
+            context.room.off("participant_disconnected", disconnected)
+            for task in disconnect_tasks:
+                task.cancel()
+            await asyncio.gather(*disconnect_tasks, return_exceptions=True)
+            await mode.aclose()
     saved = await asyncio.to_thread(store.get, session.userdata.session_id)
-    if saved["end_requested"] and saved["status"] == "completed":
+    if saved["status"] in {"completed", "failed"}:
         from livekit import api
-        await context.api.room.delete_room(api.DeleteRoomRequest(room=saved["room_name"]))
+        try:
+            await context.api.room.delete_room(api.DeleteRoomRequest(room=saved["room_name"]))
+        except api.TwirpError as error:
+            if error.code != "not_found":
+                raise
 
 
 if __name__ == "__main__":

@@ -1,14 +1,16 @@
 'use client';
 
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
-import { RoomEvent, TokenSource } from 'livekit-client';
+import { ParticipantKind, RoomEvent, TokenSource } from 'livekit-client';
 import { useAgent, useSession, useSessionMessages, useStartAudio } from '@livekit/components-react';
 import { AgentSessionProvider } from '@/components/agents-ui/agent-session-provider';
 import { AgentAudioVisualizerWave } from '@/components/agents-ui/agent-audio-visualizer-wave';
 import { Composer } from '@/components/composer';
+import { liveMessageKey } from '@/lib/transcript';
+import { rememberSession } from '@/lib/current-session';
 import { Allocation, Message, SavedSession, control, errorMessage, sleep } from '@/lib/control';
 
-export type ConversationHandle = { end: () => Promise<void> };
+export type ConversationHandle = { end: () => Promise<boolean> };
 
 type Props = {
   ref?: Ref<ConversationHandle>;
@@ -54,7 +56,8 @@ export function LiveConversation({
   updateDraft.current = onDraft;
   const [error, setError] = useState('');
   const [endBusy, setEndBusy] = useState(false);
-  const endInFlight = useRef(false);
+  const closePromise = useRef<Promise<boolean> | null>(null);
+  const finishPromise = useRef<Promise<boolean> | null>(null);
   const connectionFailure = useRef<string | undefined>(undefined);
   const ending = useRef(false);
   const finalized = useRef(false);
@@ -68,13 +71,14 @@ export function LiveConversation({
   const liveMessages = useRef(new Map<string, Message>());
 
   useEffect(() => {
-    // The SDK updates partial transcripts by ID. Keep each logical message only once.
+    // Revisions change stream IDs but retain the transcription segment ID.
     const live = liveMessages.current;
     for (const message of messages.slice(-200)) {
       // An empty assistant stream must not split a user turn before text arrives.
       if (!message.message.trim()) continue;
-      live.set(message.id, {
-        id: message.id,
+      const id = liveMessageKey(message);
+      live.set(id, {
+        id,
         role: message.from?.isLocal ? 'user' : 'assistant',
         text: message.message,
       });
@@ -99,7 +103,10 @@ export function LiveConversation({
           signal: abort.signal,
           tracks: { microphone: { enabled: initialMicrophone.current } },
         });
-        if (!disposed && !ending.current) setPhase('connected');
+        if (!disposed && !ending.current) {
+          await setVoiceMode(initialMicrophone.current);
+          setPhase('connected');
+        }
       } catch (error) {
         if (disposed || ending.current) return;
         if (queuedText.current) updateDraft.current(queuedText.current);
@@ -133,16 +140,12 @@ export function LiveConversation({
         if (disposed || finalized.current) return;
         callbacks.current.onStatus(saved);
         if (saved.status === 'completed' || saved.status === 'failed') {
-          finalized.current = true;
-          ending.current = true;
-          await actions.current.end();
           if (!disposed)
-            await callbacks.current.onFinish(
+            await finalize(
               saved,
-              latestMessages.current,
               connectionFailure.current ||
                 (saved.status === 'failed'
-                  ? 'The session ended unexpectedly. Its saved history is available, but it cannot be resumed.'
+                  ? 'The conversation ended unexpectedly. Its history is available, but it cannot be continued.'
                   : undefined),
             );
         }
@@ -172,6 +175,7 @@ export function LiveConversation({
     // Closing the tab is best effort; an unconfirmed close is never shown as completed.
     const leave = () => {
       if (finalized.current) return;
+      rememberSession(allocation.session, true);
       navigator.sendBeacon(
         `/api/control/sessions/${allocation.session.session_id}/end`,
         new Blob([JSON.stringify({ attempt_id: allocation.session.attempt_id })], {
@@ -183,14 +187,48 @@ export function LiveConversation({
     return () => window.removeEventListener('pagehide', leave);
   }, [allocation]);
 
-  async function end() {
-    if (finalized.current || endInFlight.current) return;
-    endInFlight.current = true;
+  async function setVoiceMode(enabled: boolean) {
+    const destination = [...session.room.remoteParticipants.values()].find(
+      (participant) =>
+        participant.kind === ParticipantKind.AGENT &&
+        !participant.attributes['lk.publish_on_behalf'],
+    );
+    if (!destination) throw new Error('The agent is not connected yet.');
+    await session.room.localParticipant.performRpc({
+      destinationIdentity: destination.identity,
+      method: 'opentalk.set_voice_mode',
+      payload: JSON.stringify({ enabled }),
+      responseTimeout: 10_000,
+    });
+  }
+
+  function finalize(saved: SavedSession, failure?: string): Promise<boolean> {
+    if (finishPromise.current) return finishPromise.current;
+    finalized.current = true;
+    ending.current = true;
+    finishPromise.current = (async () => {
+      startAbort.current?.abort();
+      await actions.current.end();
+      await callbacks.current.onFinish(saved, latestMessages.current, failure);
+      return true;
+    })();
+    return finishPromise.current;
+  }
+
+  function end(): Promise<boolean> {
+    if (finishPromise.current) return finishPromise.current;
+    if (closePromise.current) return closePromise.current;
+    closePromise.current = closeSession().finally(() => {
+      closePromise.current = null;
+    });
+    return closePromise.current;
+  }
+
+  async function closeSession(): Promise<boolean> {
     setEndBusy(true);
     ending.current = true;
     setPhase('ending');
     setError('');
-    // Aborting connection would disconnect before checkpointing, so stop only input here.
     try {
       await session.room.localParticipant.setMicrophoneEnabled(false);
       setVoice(false);
@@ -198,38 +236,30 @@ export function LiveConversation({
         attempt_id: allocation.session.attempt_id,
       });
       const deadline = Date.now() + 20000;
-      while (Date.now() < deadline && !finalized.current) {
+      while (Date.now() < deadline) {
+        if (finishPromise.current) return await finishPromise.current;
         const { session: saved } = await control<{ session: SavedSession }>(
           `sessions/${allocation.session.session_id}`,
         );
-        if (finalized.current) return;
         if (saved.status === 'completed' || saved.status === 'failed') {
-          finalized.current = true;
-          startAbort.current?.abort();
-          await actions.current.end();
-          await callbacks.current.onFinish(
+          return await finalize(
             saved,
-            latestMessages.current,
             saved.status === 'failed'
-              ? 'The session ended unexpectedly and cannot be resumed.'
+              ? 'The conversation ended unexpectedly and cannot be continued.'
               : undefined,
           );
-          return;
         }
         await sleep(500);
       }
-      if (!finalized.current)
-        setError(
-          'Still waiting for the backend to save this session. You can retry End conversation.',
-        );
+      setError('Still saving this conversation. Try switching conversations again in a moment.');
     } catch (error) {
       setError(
-        `Unable to confirm session completion: ${errorMessage(error)} Retry End conversation.`,
+        `Unable to save this conversation: ${errorMessage(error)} Try switching conversations again.`,
       );
     } finally {
-      endInFlight.current = false;
       setEndBusy(false);
     }
+    return false;
   }
 
   useImperativeHandle(ref, () => ({ end }));
@@ -239,10 +269,12 @@ export function LiveConversation({
     const text = queuedText.current;
     // Claim the queued message before sending so effect replays cannot send it twice.
     queuedText.current = '';
-    void sendMessage.current(text).catch((error) => {
-      updateDraft.current(text);
-      setError(`Message could not be sent: ${errorMessage(error)}`);
-    });
+    void setVoiceMode(false)
+      .then(() => sendMessage.current(text))
+      .catch((error) => {
+        updateDraft.current(text);
+        setError(`Message could not be sent: ${errorMessage(error)}`);
+      });
   }, [phase]);
 
   async function sendDraft() {
@@ -250,6 +282,7 @@ export function LiveConversation({
     if (!text || phase !== 'connected' || isSending) return;
     setError('');
     try {
+      await setVoiceMode(false);
       await send(text);
       if (latestDraft.current === draft) onDraft('');
     } catch (error) {
@@ -263,10 +296,23 @@ export function LiveConversation({
     setMicBusy(true);
     setError('');
     try {
-      await session.room.localParticipant.setMicrophoneEnabled(!voice);
+      if (voice) {
+        await session.room.localParticipant.setMicrophoneEnabled(false);
+        setVoice(false);
+        await setVoiceMode(false);
+      } else {
+        await setVoiceMode(true);
+        try {
+          await session.room.localParticipant.setMicrophoneEnabled(true);
+        } catch (error) {
+          await setVoiceMode(false);
+          throw error;
+        }
+      }
       if (ending.current) {
         // A permission prompt may resolve after the user has already ended the session.
         await session.room.localParticipant.setMicrophoneEnabled(false);
+        await setVoiceMode(false);
       } else {
         setVoice(!voice);
       }

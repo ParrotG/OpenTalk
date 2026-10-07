@@ -101,13 +101,16 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
         if not isinstance(body, dict):
             raise ValueError("An object is required.")
         agent_key = body.get("agent", "booking")
+        voice_enabled = body.get("voice_enabled", True)
+        if type(voice_enabled) is not bool:
+            raise ValueError("voice_enabled must be a boolean.")
         agent_factory(agent_key)
         reservation = await asyncio.to_thread(store.reserve, request_id=body["request_id"], mode="room",
                                                agent_key=agent_key, resume_id=body.get("resume_session_id"))
         if reservation["status"] not in {"pending", "active"} or reservation["end_requested"]:
             raise SessionError("session_closed", "Create a new request or resume a completed session.")
         metadata = json.dumps({"session_id": reservation["session_id"], "attempt_id": reservation["attempt_id"],
-                               "agent_key": reservation["agent_key"]})
+                               "agent_key": reservation["agent_key"], "voice_enabled": voice_enabled})
         room_config = RoomConfiguration(name=reservation["room_name"], max_participants=2,
                                         metadata=metadata, agents=[RoomAgentDispatch(
                                             agent_name=voice_config.agent_name, metadata=metadata)])

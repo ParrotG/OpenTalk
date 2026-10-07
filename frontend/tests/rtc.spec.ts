@@ -81,6 +81,7 @@ test('native text transport, user grouping, voice cancellation and resume share 
   await input.press('Enter');
   const probe = async () => (await request.get(`${fixtureUrl}/sessions/${sessionId}/probe`)).json();
   await expect.poll(async () => (await probe()).received).toEqual(['First fragment']);
+  expect((await probe()).voice_enabled).toBe(false);
   expect(
     await page.evaluate(
       () => (window as unknown as { microphoneRequests: number }).microphoneRequests,
@@ -111,6 +112,29 @@ test('native text transport, user grouping, voice cancellation and resume share 
   await expect(input).toHaveCount(0);
   await expect(page.getByRole('status')).toHaveText('listening');
   await expect.poll(async () => (await probe()).microphones).toEqual([false]);
+  expect((await probe()).voice_enabled).toBe(true);
+  for (const text of [
+    'Ok',
+    'Okay,',
+    'Okay, u',
+    'Okay, uh,',
+    'Okay, uh, let',
+    'Okay, uh, this',
+    'Okay, uh, this it',
+  ]) {
+    const response = await request.post(`${fixtureUrl}/sessions/${sessionId}/transcribe`, {
+      data: { segment: 'one-utterance', text },
+    });
+    expect(response.ok()).toBe(true);
+    await expect(page.locator('.message.user').last()).toHaveText(`Another turn\nt\n${text}`);
+    await expect(page.locator('.message.user')).toHaveCount(2);
+  }
+  await request.post(`${fixtureUrl}/sessions/${sessionId}/transcribe`, {
+    data: { segment: 'one-utterance', text: 'Okay, uh, this is it.', final: true },
+  });
+  await expect(page.locator('.message.user').last()).toHaveText(
+    'Another turn\nt\nOkay, uh, this is it.',
+  );
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.screenshot({ path: 'test-results/demo-voice-dark.png' });
   await page.setViewportSize({ width: 320, height: 740 });
@@ -119,9 +143,11 @@ test('native text transport, user grouping, voice cancellation and resume share 
   await page.getByRole('button', { name: 'Cancel voice' }).click();
   await expect(input).toBeEnabled();
   await expect.poll(async () => (await probe()).microphones).toEqual([true]);
+  expect((await probe()).voice_enabled).toBe(false);
   expect(creates).toBe(1);
-  await page.getByRole('button', { name: 'End conversation' }).click();
-  await expect(page.getByRole('button', { name: 'Resume session' })).toBeEnabled();
+  await page.reload();
+  await expect(page.getByRole('log')).toContainText('An actual reply.');
+  await expect(input).toBeEnabled();
   await expect(page.locator('.message.user')).toHaveCount(2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const originalId = sessionId;
@@ -131,8 +157,12 @@ test('native text transport, user grouping, voice cancellation and resume share 
   expect(sessionId).toBe(originalId);
   await expect.poll(async () => (await probe()).received.at(-1)).toBe('Continue from history');
   await expect(page.locator('.message.assistant')).toHaveText('An actual reply.');
-  await page.getByRole('button', { name: 'End conversation' }).click();
-  await expect(page.getByRole('button', { name: 'Resume session' })).toBeEnabled();
+  await page.getByRole('button', { name: 'New chat' }).click();
+  await expect(page.getByRole('log')).toBeEmpty();
+  await expect(input).toBeEnabled();
+  await expect(page.getByRole('button', { name: /Resume session|End conversation/ })).toHaveCount(
+    0,
+  );
   expect(errors).toEqual([]);
   await page.goto('about:blank');
   await page.unrouteAll({ behavior: 'wait' });

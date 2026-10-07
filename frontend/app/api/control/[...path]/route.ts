@@ -59,6 +59,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         body = JSON.stringify({
           request_id: data.request_id,
           resume_session_id: data.resume_session_id,
+          voice_enabled: data.voice_enabled,
           agent,
         });
       } else {

@@ -115,9 +115,9 @@ test('real voice: input, playback, interruption, checkpoint and resumed context'
     timeout: 30000,
   });
   await page.screenshot({ path: 'test-results/demo-active.png', fullPage: true });
-  await page.getByRole('button', { name: 'End conversation' }).click();
-  await expect(page.getByRole('button', { name: 'Resume session' })).toBeEnabled({
-    timeout: 25000,
+  await page.reload();
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled({
+    timeout: 30000,
   });
   const first = await (await request.get(`/api/control/sessions/${sessionId}`)).json();
   const archive = await (
@@ -138,9 +138,9 @@ test('real voice: input, playback, interruption, checkpoint and resumed context'
   await expect(page.locator('.message.assistant').last()).toContainText(/alice/i, {
     timeout: 30000,
   });
-  await page.getByRole('button', { name: 'End conversation' }).click();
-  await expect(page.getByRole('button', { name: 'Resume session' })).toBeEnabled({
-    timeout: 25000,
+  await page.reload();
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled({
+    timeout: 30000,
   });
   const final = await (await request.get(`/api/control/sessions/${sessionId}`)).json();
   expect(final.session.status).toBe('completed');

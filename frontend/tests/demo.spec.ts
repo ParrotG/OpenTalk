@@ -62,7 +62,10 @@ test('history displays native messages as plain text and only completed sessions
   await expect(page.getByRole('button', { name: 'Start voice' })).toBeEnabled();
   await page.getByLabel('Recent sessions', { exact: true }).first().click();
   await page.getByRole('button', { name: /normal-sessi/ }).click();
-  await expect(page.getByRole('button', { name: 'Resume session' })).toBeEnabled();
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /Resume session|End conversation/ })).toHaveCount(
+    0,
+  );
   await expect(page.getByRole('log')).toContainText('Hello <script>unsafe()</script>');
   await expect(page.locator('.message')).toHaveCount(2);
   await expect(page.getByRole('log')).not.toContainText('Assistant');
@@ -186,4 +189,62 @@ test('user pauses share a bubble until an actual assistant message appears', asy
   expect(styles).toEqual({ border: '0px', background: 'rgba(0, 0, 0, 0)' });
   await page.locator('.message.assistant').click();
   await page.screenshot({ path: 'test-results/demo-transcript-desktop.png' });
+});
+
+test('reopening restores saved history without allocating a room or requesting a microphone', async ({
+  page,
+}) => {
+  await mockControl(page);
+  let creates = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'POST') creates++;
+  });
+  await page.addInitScript(() =>
+    localStorage.setItem(
+      'opentalk.currentSession',
+      JSON.stringify({
+        id: 'normal-session',
+        attempt: 'attempt-normal-session',
+        closing: false,
+      }),
+    ),
+  );
+  await page.goto('/');
+  await expect(page.getByRole('log')).toContainText('Welcome back.');
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /Resume session|End conversation/ })).toHaveCount(
+    0,
+  );
+  expect(creates).toBe(0);
+});
+
+test('a different active attempt is never automatically ended or resumed', async ({ page }) => {
+  await mockControl(page);
+  await page.addInitScript(() =>
+    localStorage.setItem(
+      'opentalk.currentSession',
+      JSON.stringify({
+        id: 'normal-session',
+        attempt: 'old-attempt',
+        closing: true,
+      }),
+    ),
+  );
+  await page.route('**/api/control/sessions/normal-session', (route) =>
+    route.fulfill({
+      json: { session: { ...saved('normal-session', 'active'), attempt_id: 'another-attempt' } },
+    }),
+  );
+  let ends = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'POST') ends++;
+  });
+  await page.goto('/');
+  await expect(page.locator('.archive-notice')).toContainText('another connection');
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeDisabled();
+  expect(ends).toBe(0);
+  await page.getByRole('button', { name: 'New chat' }).click();
+  await expect(page.getByRole('log')).toBeEmpty();
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled();
+  expect(ends).toBe(0);
 });

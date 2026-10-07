@@ -1,6 +1,7 @@
 """Generic native LiveKit agent with scoped reasoning and response bookkeeping."""
 
 import asyncio
+from contextlib import aclosing
 from datetime import UTC, datetime
 
 from livekit.agents import Agent, RunContext, function_tool, llm
@@ -28,6 +29,7 @@ class ConversationAgent(Agent):
         self._speech_turns = {}
         self._execution_lock = asyncio.Lock()
         self._reasoning_turn = None
+        self.audio_mode = None
         super().__init__(chat_ctx=chat_ctx, instructions=instructions + VOICE_INSTRUCTIONS + (
             " Follow the user's language and explicit response language preferences. "
             "For a difficult task, use escalate_reasoning after briefly telling the user "
@@ -39,6 +41,13 @@ class ConversationAgent(Agent):
     @property
     def preferred_response_language(self):
         return self.state.preferred_response_language
+
+    async def tts_node(self, text, model_settings):
+        stream = Agent.default.tts_node(self, text, model_settings)
+        frames = self.audio_mode.frames(stream, text) if self.audio_mode is not None else stream
+        async with aclosing(frames):
+            async for frame in frames:
+                yield frame
 
     @preferred_response_language.setter
     def preferred_response_language(self, value):

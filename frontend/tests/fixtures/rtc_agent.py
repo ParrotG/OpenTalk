@@ -5,10 +5,15 @@ import signal
 import tempfile
 import time
 import uuid
+import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 from aiohttp import web
 from livekit import api, rtc
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "backend"))
+from opentalk.voice.room_control import RoomAudioMode
 
 URL = "ws://127.0.0.1:18180"
 
@@ -31,6 +36,7 @@ async def main() -> None:
     peers: dict[str, rtc.Room] = {}
     histories: dict[str, list] = {}
     received: dict[str, list[str]] = {}
+    modes: dict[str, RoomAudioMode] = {}
     tasks: set[asyncio.Task] = set()
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -99,6 +105,17 @@ async def main() -> None:
 
                     peer.register_text_stream_handler("lk.chat", on_text)
                     await peer.connect(URL, token(room_name, "test-agent", "agent"))
+                    class AudioFlag:
+                        def __init__(self):
+                            self.audio_enabled = True
+                            self.audio = None
+
+                        def set_audio_enabled(self, enabled):
+                            self.audio_enabled = enabled
+
+                    modes[ident] = RoomAudioMode(SimpleNamespace(input=AudioFlag(), output=AudioFlag()),
+                                                  enabled=data.get("voice_enabled", True))
+                    modes[ident].register(peer, "User")
                     source = rtc.AudioSource(48000, 1)
                     track = rtc.LocalAudioTrack.create_audio_track("test-silence", source)
                     await peer.local_participant.publish_track(
@@ -131,7 +148,23 @@ async def main() -> None:
                 if path.endswith("/probe"):
                     tracks = [publication.muted for participant in peer.remote_participants.values()
                               for publication in participant.track_publications.values()]
-                    return web.json_response({"received": received[ident], "microphones": tracks})
+                    return web.json_response({"received": received[ident], "microphones": tracks,
+                                              "voice_enabled": modes[ident].session.output.audio_enabled})
+                if path.endswith("/transcribe"):
+                    data = await request.json()
+                    final = data.get("final", False)
+                    writer = await peer.local_participant.stream_text(
+                        topic="lk.transcription", sender_identity="User",
+                        attributes={"lk.segment_id": data["segment"],
+                                    "lk.transcribed_track_id": "test-microphone",
+                                    "lk.transcription_final": "true" if final else "false"},
+                    )
+                    await writer.write(data["text"])
+                    await writer.aclose()
+                    if final:
+                        item = {"id": data["segment"], "type": "message", "role": "user", "content": [data["text"]]}
+                        histories[ident] = [entry for entry in histories[ident] if entry["id"] != data["segment"]] + [item]
+                    return web.json_response({"ok": True})
                 if path.endswith("/reply"):
                     text = (await request.json())["text"]
                     stream = await peer.local_participant.send_text(text, topic="lk.chat")

@@ -14,3 +14,5 @@ The app follows the starter's `useSession`, `useAgent`, and `useSessionMessages`
 Selected SDK/runtime versions are pinned to the upstream lockfile resolutions. The existing Python lockfile is unchanged. Browser test tooling is an additional development dependency. No upstream dependency upgrades were introduced.
 
 The visualizer responds to audio volume and agent state. It is an animated waveform, not a calibrated PCM measurement instrument.
+
+OpenTalk handles normal-close and resume internally, remembers the selected session reference locally, and deduplicates transcript revisions by native segment identity. Text/voice switching uses a participant-scoped native RPC to change backend audio mode; text replies bypass TTS and playback synchronization. These controls are independent of booking tools and the upstream visualizer.

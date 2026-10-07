@@ -12,7 +12,9 @@ import {
   control,
   errorMessage,
   history,
+  sleep,
 } from '@/lib/control';
+import { currentSession, rememberSession, type CurrentSession } from '@/lib/current-session';
 import { conversationBubbles } from '@/lib/transcript';
 
 function date(timestamp: number) {
@@ -59,6 +61,8 @@ export function TalkDemo() {
   const [initialText, setInitialText] = useState('');
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(true);
+  const restored = useRef(false);
   const [error, setError] = useState('');
   const busyRef = useRef(false);
   const selectionVersion = useRef(0);
@@ -116,36 +120,111 @@ export function TalkDemo() {
     });
   }
 
-  function newChat() {
-    if (busyRef.current || allocation) return;
-    ++selectionVersion.current;
-    pendingRequest.current = null;
-    setSelected(null);
-    setMessages([]);
-    setDraft('');
-    setError('');
+  async function newChat() {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      if (allocation && !(await live.current?.end())) return;
+      ++selectionVersion.current;
+      pendingRequest.current = null;
+      rememberSession(null);
+      setSelected(null);
+      setMessages([]);
+      setDraft('');
+      setError('');
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   }
 
-  async function select(saved: SavedSession) {
-    const version = ++selectionVersion.current;
+  async function select(saved: { session_id: string }, remembered?: CurrentSession) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
     setError('');
+    let version = selectionVersion.current;
     try {
-      const [detail, transcript] = await Promise.all([
-        control<{ session: SavedSession }>(`sessions/${saved.session_id}`),
-        history(saved.session_id),
-      ]);
-      if (version !== selectionVersion.current || busyRef.current) return;
+      if (allocation && !(await live.current?.end())) return;
+      version = ++selectionVersion.current;
+      let detail = await control<{ session: SavedSession }>(`sessions/${saved.session_id}`);
+      if (
+        remembered?.closing &&
+        remembered.attempt === detail.session.attempt_id &&
+        ['active', 'pending'].includes(detail.session.status)
+      ) {
+        // Retry only this browser's recorded normal-close intent, never another attempt.
+        await control(`sessions/${saved.session_id}/end`, { attempt_id: remembered.attempt });
+        detail = await control<{ session: SavedSession }>(`sessions/${saved.session_id}`);
+      }
+      const deadline = Date.now() + 25000;
+      while (
+        detail.session.end_requested &&
+        detail.session.status === 'active' &&
+        Date.now() < deadline
+      ) {
+        await sleep(500);
+        detail = await control<{ session: SavedSession }>(`sessions/${saved.session_id}`);
+      }
+      const transcript = await history(saved.session_id);
+      if (version !== selectionVersion.current) return;
       pendingRequest.current = null;
       setSelected(detail.session);
+      rememberSession(detail.session);
       setMessages(transcript);
       setDraft('');
     } catch (error) {
       if (version === selectionVersion.current) setError(errorMessage(error));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+      setRestoring(false);
     }
   }
 
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    const saved = currentSession();
+    if (saved) void select({ session_id: saved.id }, saved);
+    else setRestoring(false);
+  }, []);
+
+  useEffect(() => {
+    if (allocation || !selected || !['active', 'pending'].includes(selected.status)) return;
+    const id = selected.session_id;
+    const version = selectionVersion.current;
+    let disposed = false;
+    let polling = false;
+    const timer = setInterval(async () => {
+      if (polling || busyRef.current) return;
+      polling = true;
+      try {
+        const detail = await control<{ session: SavedSession }>(`sessions/${id}`);
+        if (disposed || version !== selectionVersion.current) return;
+        setSelected(detail.session);
+        if (['completed', 'failed'].includes(detail.session.status)) {
+          const transcript = await history(id);
+          if (!disposed && version === selectionVersion.current) {
+            setMessages(transcript);
+            rememberSession(detail.session);
+          }
+        }
+      } catch {
+        // Keep saved history visible during a temporary control API outage.
+      } finally {
+        polling = false;
+      }
+    }, 2000);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [allocation, selected?.session_id, selected?.status]);
+
   async function start(voice: boolean, text = '') {
-    if (busyRef.current || allocation) return;
+    if (busyRef.current || allocation || restoring) return;
     busyRef.current = true;
     setBusy(true);
     setError('');
@@ -168,6 +247,7 @@ export function TalkDemo() {
       const created = await control<Allocation>('sessions', {
         request_id: pendingRequest.current.id,
         resume_session_id: resume,
+        voice_enabled: voice,
       });
       pendingRequest.current = null;
       setInitialVoice(voice);
@@ -175,6 +255,7 @@ export function TalkDemo() {
       if (text) setDraft('');
       setMessages(transcript);
       setSelected(created.session);
+      rememberSession(created.session);
       setAllocation(created);
       void refresh();
     } catch (error) {
@@ -195,6 +276,7 @@ export function TalkDemo() {
       const version = ++selectionVersion.current;
       setAllocation(null);
       setSelected(saved);
+      rememberSession(saved);
       setMessages(liveMessages);
       if (failure) setError(failure);
       try {
@@ -222,34 +304,14 @@ export function TalkDemo() {
         <div className="header-actions">
           <button
             className="toolbar-button"
-            disabled={busy || !!allocation}
-            onClick={newChat}
+            disabled={busy || restoring}
+            onClick={() => void newChat()}
             aria-label="New chat"
             title="New chat"
           >
             <Plus size={18} aria-hidden="true" />
             <span className="toolbar-label">New chat</span>
           </button>
-          {allocation && (
-            <button
-              className="text-button end-button"
-              aria-label="End conversation"
-              title="End conversation"
-              onClick={() => void live.current?.end()}
-            >
-              End<span className="toolbar-label"> conversation</span>
-            </button>
-          )}
-          {!allocation && selected?.status === 'completed' && (
-            <button
-              className="text-button"
-              aria-label="Resume session"
-              disabled={busy || !ready}
-              onClick={() => void start(false)}
-            >
-              Resume<span className="toolbar-label"> session</span>
-            </button>
-          )}
           <details className="utility" onToggle={(event) => panelOpened(event.currentTarget)}>
             <summary aria-label="Recent sessions" title="Recent sessions">
               <History size={18} aria-hidden="true" />
@@ -273,7 +335,7 @@ export function TalkDemo() {
                   recent.map((saved) => (
                     <button
                       className={`recent-item ${selected?.session_id === saved.session_id ? 'selected' : ''}`}
-                      disabled={!!allocation || busy}
+                      disabled={busy || restoring}
                       key={saved.session_id}
                       onClick={() => void select(saved)}
                     >
@@ -344,7 +406,9 @@ export function TalkDemo() {
         <p className="archive-notice">
           {selected.status === 'failed'
             ? 'This session ended unexpectedly and cannot be resumed. Start a new chat to continue.'
-            : 'This session is active in another connection. Start a new chat to continue.'}
+            : selected.end_requested
+              ? 'This conversation is still being saved. It will be available shortly.'
+              : 'This conversation is active in another connection. Start a new chat to continue.'}
         </p>
       )}
       <Transcript messages={messages} />
@@ -369,12 +433,12 @@ export function TalkDemo() {
             onDraft={setDraft}
             onSend={() => void start(false, draft.trim())}
             onVoice={() => void start(true)}
-            disabled={busy || !ready || archived}
+            disabled={busy || restoring || !ready || archived}
           />
         )}
-        {!allocation && busy && (
+        {!allocation && (busy || restoring) && (
           <p className="composer-status" role="status">
-            Connecting…
+            {restoring ? 'Loading conversation…' : 'Preparing conversation…'}
           </p>
         )}
       </div>

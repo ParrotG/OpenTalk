@@ -17,6 +17,9 @@ class SessionJournal:
         self._pending = deque(maxlen=pending_event_limit)
         self._sequence = 0
         self.dropped_events = 0
+        self._checkpoint_task = None
+        self._checkpoint_requested = False
+        self._accept_checkpoints = True
         # This bounded view is for diagnostics and tests, not conversation persistence.
         self.report = {"events": deque(maxlen=pending_event_limit)}
 
@@ -69,10 +72,34 @@ class SessionJournal:
         session.on("function_tools_executed", tools_executed)
         session.on("error", error)
         session.on("close", closed)
+        session.on("conversation_item_added", lambda event: self.request_checkpoint())
         for provider in (session.llm, session.stt, session.tts):
             if provider is not None:
                 provider.on("metrics_collected", lambda metrics: self.record(
                     "model_metrics", data=metrics.model_dump(mode="json")))
+
+    def request_checkpoint(self):
+        if not self._accept_checkpoints:
+            return
+        self._checkpoint_requested = True
+        if self._checkpoint_task is None or self._checkpoint_task.done():
+            self._checkpoint_task = asyncio.create_task(self._checkpoint())
+
+    async def _checkpoint(self):
+        try:
+            while self._checkpoint_requested:
+                await asyncio.sleep(0.05)
+                self._checkpoint_requested = False
+                await self.save()
+        except Exception as error:
+            self.failed, self.error_code = True, "persistence_failed"
+            self.record("checkpoint_error", error_type=type(error).__name__)
+            await self.session.aclose()
+
+    async def flush(self):
+        self._accept_checkpoints = False
+        if self._checkpoint_task is not None:
+            await self._checkpoint_task
 
     async def save(self, *, status=None, error_code=None):
         async with self._save_lock:
