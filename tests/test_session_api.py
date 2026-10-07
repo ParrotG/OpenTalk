@@ -72,3 +72,50 @@ def test_api_invalid_requests_failed_restore_and_pagination():
             assert (await client.get("/sessions/unknown")).status == 404
             assert (await client.post(f"/sessions/{saved['session_id']}/end", json={})).status == 400
     asyncio.run(scenario())
+
+
+def test_service_checks_report_unavailable_dependencies_without_provider_calls(monkeypatch):
+    from aiohttp import web
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "configured-test-key")
+    monkeypatch.setenv("SONIOX_API_KEY", "configured-test-key")
+    config = session_settings.load_session_config()
+    remote = SimpleNamespace(room=SimpleNamespace(list_rooms=AsyncMock()))
+
+    async def scenario():
+        worker = web.Application()
+        async def health(request):
+            return web.Response(text="OK")
+        async def information(request):
+            return web.json_response({"agent_name": "opentalk-booking"})
+        worker.add_routes([web.get("/", health), web.get("/worker", information)])
+        async with TestServer(worker) as worker_server:
+            monkeypatch.setenv("OPENTALK_WORKER_HEALTH_URL", str(worker_server.make_url("/")))
+            async with TestClient(TestServer(create_app(configuration=config, livekit=remote,
+                    api_key="test-key", api_secret="test-secret"))) as client:
+                response = await client.get("/health/services")
+                assert response.status == 200
+                checks = await response.json()
+                assert checks["status"] == "ok"
+                assert checks["services"]["providers"]["status"] == "configured"
+                remote.room.list_rooms.side_effect = RuntimeError("Sensitive internal exception")
+                checks = await (await client.get("/health/services")).json()
+                assert checks["status"] == "degraded"
+                assert checks["services"]["livekit"]["status"] == "unavailable"
+                assert "Sensitive" not in json.dumps(checks)
+    asyncio.run(scenario())
+
+
+def test_history_tail_returns_recent_native_items_with_bounds():
+    config = session_settings.load_session_config()
+    store = SessionStore(config.database_path)
+    saved = store.reserve(request_id="history")
+    store.claim(saved["session_id"], saved["attempt_id"], "worker")
+    items = [{"id": f"message-{index}", "type": "message", "role": "user", "content": [str(index)]} for index in range(5)]
+    store.checkpoint(saved["session_id"], saved["attempt_id"], "worker", {"items": items}, {})
+    async def scenario():
+        async with TestClient(TestServer(create_app(configuration=config, store=store))) as client:
+            endpoint = f"/sessions/{saved['session_id']}/history?tail=true&limit="
+            result = await (await client.get(endpoint + "2")).json()
+            assert [item["id"] for item in result["items"]] == ["message-3", "message-4"]
+            assert (await client.get(endpoint + "1001")).status == 400
+    asyncio.run(scenario())

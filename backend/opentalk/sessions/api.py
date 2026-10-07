@@ -7,15 +7,18 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
-from aiohttp import ClientTimeout, web
+from aiohttp import ClientSession, ClientTimeout, web
 from dotenv import load_dotenv
 from livekit import api
 from livekit.protocol.agent_dispatch import RoomAgentDispatch
 from livekit.protocol.room import RoomConfiguration
 
 from opentalk.config import PROJECT_ROOT
+from opentalk.asr.provider import load_asr_config
+from opentalk.llm.provider import load_llm_config
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionError, SessionStore
+from opentalk.tts.provider import load_tts_config
 from opentalk.voice.config import load_voice_config
 from opentalk.voice.factories import agent_factory
 
@@ -46,6 +49,50 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
     async def health(request):
         await asyncio.to_thread(store.list, limit=1)
         return web.json_response({"status": "ok"})
+
+    async def services(request):
+        # These checks do not invoke paid providers or allocate a room.
+        async def database_check():
+            await asyncio.to_thread(store.list, limit=1)
+
+        async def livekit_check():
+            if not key or not secret:
+                raise ValueError("Missing LiveKit credentials.")
+            if livekit is not None:
+                await livekit.room.list_rooms(api.ListRoomsRequest())
+            else:
+                async with api.LiveKitAPI(url=internal_url, api_key=key, api_secret=secret,
+                                         timeout=ClientTimeout(total=3)) as client:
+                    await client.room.list_rooms(api.ListRoomsRequest())
+
+        async def worker_check():
+            worker_url = os.environ.get("OPENTALK_WORKER_HEALTH_URL", "http://127.0.0.1:8081").rstrip("/")
+            async with ClientSession(timeout=ClientTimeout(total=3)) as client:
+                async with client.get(worker_url) as response:
+                    response.raise_for_status()
+                async with client.get(worker_url + "/worker") as response:
+                    response.raise_for_status()
+                    information = await response.json()
+                    if information.get("agent_name") != voice_config.agent_name:
+                        raise ValueError("The worker agent name does not match.")
+
+        names = ("sessions", "livekit", "worker")
+        results = await asyncio.gather(*(asyncio.wait_for(check(), timeout=4)
+            for check in (database_check, livekit_check, worker_check)), return_exceptions=True)
+        checks = {name: {"status": "unavailable" if isinstance(result, BaseException) else "ok"}
+                  for name, result in zip(names, results)}
+        def provider_configuration():
+            credentials = (load_llm_config().api_key_env, load_asr_config().api_key_env,
+                           load_tts_config().api_key_env)
+            return all(os.environ.get(name, "").strip() for name in credentials)
+        try:
+            configured = await asyncio.to_thread(provider_configuration)
+            checks["providers"] = {"status": "configured" if configured else "missing_configuration"}
+        except ValueError:
+            checks["providers"] = {"status": "invalid_configuration"}
+        ready = all(checks[name]["status"] == "ok" for name in names) and checks["providers"]["status"] == "configured"
+        return web.json_response({"status": "ok" if ready else "degraded", "services": checks},
+                                 headers={"Cache-Control": "no-store"})
 
     async def create(request):
         if not key or not secret:
@@ -84,6 +131,12 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
                                  "attempts": await asyncio.to_thread(store.attempts, session_id)})
 
     async def history(request):
+        if request.query.get("tail") == "true":
+            limit = int(request.query.get("limit", 200))
+            if not 1 <= limit <= 1000:
+                raise ValueError("Invalid history limit.")
+            return web.json_response(await asyncio.to_thread(store.history_tail,
+                request.match_info["session_id"], max_items=limit))
         return web.json_response(await asyncio.to_thread(store.history, request.match_info["session_id"],
             limit=int(request.query.get("limit", 100)), offset=int(request.query.get("offset", 0))))
 
@@ -114,7 +167,7 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
                 return web.json_response({"session": result, "error": "room_cleanup_failed"}, status=502)
         return web.json_response(result, status=202 if result["status"] == "active" else 200)
 
-    app.add_routes([web.get("/health", health), web.post("/sessions", create),
+    app.add_routes([web.get("/health", health), web.get("/health/services", services), web.post("/sessions", create),
                     web.get("/sessions", listing), web.get("/sessions/{session_id}", show),
                     web.get("/sessions/{session_id}/history", history),
                     web.post("/sessions/{session_id}/end", end)])

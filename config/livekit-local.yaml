@@ -1,0 +1,17 @@
+# Local development only: the browser and worker must run on the same computer.
+# Explicit loopback ICE addresses avoid Windows-to-WSL mirrored LAN hairpin traffic.
+development: true
+port: 7880
+bind_addresses:
+  - 127.0.0.1
+logging:
+  level: info
+rtc:
+  node_ip: 127.0.0.1
+  use_external_ip: false
+  enable_loopback_candidate: true
+  tcp_port: 7881
+  udp_port: 7882
+  ips:
+    includes:
+      - 127.0.0.1/32

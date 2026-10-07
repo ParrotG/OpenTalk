@@ -4,7 +4,7 @@ OpenTalk is a voice demo project for learning and validating streaming voice age
 
 ## Status
 
-The meeting-room booking backend, configurable streaming LLM provider, and Soniox streaming ASR/TTS providers are implemented. Providers return native LiveKit `LLM`, `STT`, and `TTS` instances. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. ASR can replay a local audio file, and TTS can stream text into a WAV output, without a frontend or LiveKit Server. A native LiveKit AgentSession now connects the providers, Silero VAD, and booking tools. Local microphone console and headless text entrypoints are available; browser integration is pending. Independent SQLite sessions, normal-completion resume, text session commands, and a local control/token API are available. The booking CLI and offline tests require no API credentials.
+The meeting-room booking backend, configurable streaming LLM provider, and Soniox streaming ASR/TTS providers are implemented. Providers return native LiveKit `LLM`, `STT`, and `TTS` instances. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. ASR can replay a local audio file, and TTS can stream text into a WAV output, without a frontend or LiveKit Server. A native LiveKit AgentSession now connects the providers, Silero VAD, and booking tools. Local microphone console and headless text entrypoints are available; a minimal LiveKit starter browser frontend is available with voice, waveform, transcript, and session controls. Independent SQLite sessions, normal-completion resume, text session commands, and a local control/token API are available. The booking CLI and offline tests require no API credentials.
 
 See the [development plan](docs/开发计划.md) for the agreed architecture, module boundaries, and acceptance criteria. The development plan is written in Chinese.
 
@@ -182,7 +182,7 @@ No models are initialized until a conversation starts. `/session`, `/session lis
 
 The separate SQLite session service has no booking dependency. The booking adapter lives in `voice/factories.py`; the conversation adapter uses no booking database. Default context is limited to 120 items, diagnostics to 512 queued / 10000 stored events and 7 days, and each running attempt to one hour. Actual conversation history is retained once per native item ID and grows with actual conversation, independently of diagnostic retention.
 
-Start the local control API for the later browser:
+Start the local control API for the browser:
 
 ```bash
 PYTHONPATH=backend uv run --locked python -m opentalk.sessions.api
@@ -191,6 +191,32 @@ PYTHONPATH=backend uv run --locked python -m opentalk.sessions.api
 It listens on `127.0.0.1:8080` and provides session creation/resume, listing, paginated history, signed room tokens, and idempotent end requests. API and worker share the session database. `LIVEKIT_URL` is the internal server address; `LIVEKIT_PUBLIC_URL` overrides the browser-facing address. Web clients must request normal end and wait for the final checkpoint; unsolicited participant disconnects are conservatively failed.
 
 See the Chinese [session validation guide](docs/会话管理验证指南.md) for CLI acceptance steps, configuration, lifecycle semantics, API payloads, and official references. Existing `logs/voice` JSON artifacts are historical and are not automatically imported.
+
+## Browser demo
+
+The trimmed [LiveKit starter frontend](frontend/README.md) contains voice controls, agent waveform, transcript, and persisted session selection/resume. It has no booking-specific UI. Run these in separate terminals from the project root after configuring root `.env.local`:
+
+```bash
+livekit-server --config config/livekit-local.yaml
+PYTHONPATH=backend uv run --locked python -m opentalk.sessions.api
+PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker dev --no-reload --log-level info
+```
+
+Then start the frontend:
+
+```bash
+cd frontend
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+Open http://localhost:3000 and allow microphone access. Use Node.js 24 and pnpm 10.13.1. The frontend proxies the session API on the server; default `OPENTALK_API_URL` is `http://127.0.0.1:8080`. `OPENTALK_AGENT=conversation` selects the generic talkbot; default `booking` retains booking tools in the agent without adding business UI. Secrets stay in the Python backend.
+
+The local LiveKit configuration advertises only `127.0.0.1` ICE candidates and enables loopback media binding. This is required for Windows browsers accessing WSL through localhost when the automatically selected LAN address is unreachable. It uses development credentials and is intended for browsers and workers on the same computer. Remote browsers need a separate reachable media-address configuration.
+
+The Services panel checks session storage, authenticated LiveKit connectivity, worker HTTP health on port 8081, and provider configuration every 10 seconds. It does not make paid provider calls. End conversation waits for the backend final checkpoint before disconnecting. Only completed sessions can resume; unexpected failures remain read-only.
+
+See the Chinese [browser validation guide](docs/网页语音验证指南.md) for staged tests, independent test databases, actual browser integration results, configuration overrides, and physical microphone checks. Docker is deferred to the next phase.
 
 ## Legacy booking CLI
 
@@ -223,7 +249,7 @@ Preparing a proposal does not reserve a slot. To change an unconfirmed proposal,
 
 Reuse the operation ID and unchanged arguments when retrying. Query `operation OPERATION_ID` after a lost response. Successful operations retain their original result snapshot, even if the booking is subsequently cancelled; use `booking BOOKING_ID` for its current state. Cancellation is an explicit CLI write command. The current conversation agent instead uses edit after natural-language confirmation.
 
-The service writes business state and operation events in one transaction. Confirmation conflicts and expiry persist a failed operation. This synchronous backend does not persist intermediate executing/unknown states; a caller with an unknown response can recover the committed outcome by operation ID. Slots are fixed, non-overlapping intervals per room. There is no HTTP server, authentication flow, or SQLite transcript storage; the fixed user and session are demo context, not production authentication. The voice session writes role-separated transcripts, response status, provider usage, and tool/business events to local JSON reports.
+The service writes business state and operation events in one transaction. Confirmation conflicts and expiry persist a failed operation. This synchronous backend does not persist intermediate executing/unknown states; a caller with an unknown response can recover the committed outcome by operation ID. Slots are fixed, non-overlapping intervals per room. The booking CLI has no authentication flow; its fixed user and session are demo context, not production authentication. The independent session API and SQLite history store are described above. Provider metrics and diagnostics use a separate bounded telemetry database.
 
 ## Environment inspection
 
@@ -245,7 +271,7 @@ The default uv cache was not writable in the inspection sandbox. Setting `UV_CAC
 
 The current restricted sandbox can also stall during `asyncio.run()` thread-pool shutdown, including a minimal `asyncio.to_thread()` example. The complete offline suite passed outside that sandbox; no application workaround was introduced. Real API tests require network access to the configured endpoint.
 
-Booking tests run on Python 3.11. The configured DeepSeek credential and official endpoint have passed a real streaming smoke test and two real text-tool scenarios. Native Soniox plugin compatibility and file replay have passed offline tests. The user reported successful manual Soniox ASR/TTS tests. LiveKit Server connectivity and microphone conversation have not been validated in this environment.
+Booking tests run on Python 3.11. The configured DeepSeek credential and official endpoint have passed a real streaming smoke test and two real text-tool scenarios. Native Soniox plugin compatibility and file replay have passed offline tests. The user reported successful manual Soniox ASR/TTS tests. Local LiveKit connectivity and the browser media pipeline have passed real Soniox / DeepSeek tests using simulated browser microphone input. Physical microphone quality and acoustic echo remain manual checks.
 
 ## Development conventions
 

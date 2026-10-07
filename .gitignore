@@ -12,6 +12,9 @@ recordings/
 *.sqlite3-wal
 node_modules/
 .next/
+*.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
 
 assets/
 # Local ONNX Runtime telemetry state.

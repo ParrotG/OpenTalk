@@ -1,6 +1,7 @@
 """Load session persistence, retention, and control API settings."""
 
 import math
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,7 @@ class SessionConfig:
 
 
 def load_session_config(path=None):
-    path = path or PROJECT_ROOT / "config/sessions.toml"
+    path = path or os.environ.get("OPENTALK_SESSION_CONFIG") or PROJECT_ROOT / "config/sessions.toml"
     try:
         with Path(path).open("rb") as file:
             values = tomllib.load(file)["sessions"]

@@ -17,7 +17,9 @@ from opentalk.voice.session import create_vad, open_session
 
 load_dotenv(PROJECT_ROOT / ".env.local", override=False)
 configuration = load_voice_config()
-server = AgentServer(ws_url=os.environ.get("LIVEKIT_URL", configuration.livekit_url))
+server = AgentServer(ws_url=os.environ.get("LIVEKIT_URL", configuration.livekit_url),
+                     host=os.environ.get("OPENTALK_WORKER_HEALTH_HOST", "127.0.0.1"),
+                     port=int(os.environ.get("OPENTALK_WORKER_HEALTH_PORT", "8081")))
 
 
 def prewarm(process: JobProcess):
