@@ -43,7 +43,7 @@ The remote implementation requires:
 - `SONIOX_API_KEY` and valid Soniox model and voice settings.
 - `DEEPSEEK_API_KEY` for the current official DeepSeek endpoint, or a configurable credential variable for another compatible provider.
 - A configured LLM model that supports streaming and tool calls.
-- For room worker mode only: a reachable LiveKit Server, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET`. Local console and headless text modes require no LiveKit Server.
+- Room worker mode needs a reachable LiveKit Server. Both room and local console modes need `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` with this SDK setup. For `livekit-server --dev`, use `devkey` / `secret` and `LIVEKIT_URL=ws://localhost:7880`. Headless text needs no LiveKit settings.
 
 Provider credentials and LiveKit API secrets must remain on the backend. The browser will receive only public settings and short-lived connection tokens. Server secrets must not use `NEXT_PUBLIC_*` variables.
 
@@ -152,7 +152,7 @@ PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker console --lis
 PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker console
 ```
 
-The text entrypoint uses the same native agent and tool execution, reads standard input, and exits on `/quit`, EOF, or Ctrl+C. It does not test ASR/TTS or acoustic interruptions. The microphone console is provided by the locked SDK and needs no browser or LiveKit Server. Its Python CLI is marked deprecated by LiveKit but remains available in the locked version; it does not require installing the separate `lk` CLI.
+The text entrypoint uses the same native agent and tool execution, reads standard input, and exits on `/quit`, EOF, or Ctrl+C. It does not test ASR/TTS or acoustic interruptions. The microphone console is provided by the locked SDK and needs no browser or active room connection. Because this worker configures a server URL, the locked SDK initializes a LiveKitAPI client even in console mode; configure the local development API key/secret from `.env.example` to avoid the missing-credentials error. Its Python CLI is marked deprecated by LiveKit but remains available in the locked version; it does not require installing the separate `lk` CLI.
 
 Ask for all known rooms or available intervals across dates. To reserve, move, or cancel a reservation, describe the request and answer the assistant’s confirmation question naturally. The agent should ask again after changed details and should not interpret a refusal, question, or interrupted explanation as confirmation. Multilingual user input and generated LLM responses are preserved. `请用英语回复` / `please reply in English` and `请用中文回复` / `please reply in Chinese` set the explicit reply preference and subsequent TTS language.
 
