@@ -16,8 +16,11 @@ VOICE_INSTRUCTIONS = (
 
 
 class ConversationAgent(Agent):
-    def __init__(self, *, instructions, journal, reasoning_model=None, reasoning_options=None, clock=None):
+    def __init__(self, *, instructions, journal, state, chat_ctx=None, context_max_items=120,
+                 reasoning_model=None, reasoning_options=None, clock=None):
         self.journal = journal
+        self.state = state
+        self.context_max_items = context_max_items
         self.reasoning_model = reasoning_model
         self.reasoning_options = reasoning_options
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -25,14 +28,21 @@ class ConversationAgent(Agent):
         self._speech_turns = {}
         self._execution_lock = asyncio.Lock()
         self._reasoning_turn = None
-        self.preferred_response_language = None
-        super().__init__(instructions=instructions + VOICE_INSTRUCTIONS + (
+        super().__init__(chat_ctx=chat_ctx, instructions=instructions + VOICE_INSTRUCTIONS + (
             " Follow the user's language and explicit response language preferences. "
             "For a difficult task, use escalate_reasoning after briefly telling the user "
             "you are checking it. Give the tool a self-contained task and relevant facts. "
             "It performs one stronger analysis, then the default model continues. "
             "Do not escalate repeatedly for the same user turn."
         ))
+
+    @property
+    def preferred_response_language(self):
+        return self.state.preferred_response_language
+
+    @preferred_response_language.setter
+    def preferred_response_language(self, value):
+        self.state.preferred_response_language = value
 
     def runtime_context(self):
         return f"Current date and time: {self.clock():%Y-%m-%d %H:%M:%S}."
@@ -50,24 +60,17 @@ class ConversationAgent(Agent):
                                 preferred_response_language=self.preferred_response_language)
         handle = self.session.current_speech
         if handle is not None:
+            self._speech_turns = {key: value for key, value in self._speech_turns.items()
+                                  if value == self.turn_id}
             self._speech_turns[handle.id] = self.turn_id
         if self.preferred_response_language and self.session.tts is not None:
             self.session.tts.update_options(language=self.preferred_response_language)
         context = chat_ctx.copy()
+        context.truncate(max_items=self.context_max_items)
         context.add_message(role="system", content=(self.runtime_context() +
                             f" Reply language preference: {self.preferred_response_language or 'follow the user'}."))
-        parts = []
-        try:
-            async for chunk in Agent.default.llm_node(self, context, tools, model_settings):
-                if isinstance(chunk, str):
-                    parts.append(chunk)
-                elif chunk.delta and chunk.delta.content:
-                    parts.append(chunk.delta.content)
-                yield chunk
-        finally:
-            if handle is not None:
-                response = self.journal.report["responses"].setdefault(handle.id, {})
-                response["generated_text"] = response.get("generated_text", "") + "".join(parts)
+        async for chunk in Agent.default.llm_node(self, context, tools, model_settings):
+            yield chunk
 
     def _valid(self, context: RunContext):
         return (not context.speech_handle.interrupted
@@ -78,10 +81,12 @@ class ConversationAgent(Agent):
             async with self._execution_lock:
                 if not self._valid(context):
                     return {"ok": False, "error": "stale_response", "message": "The response is no longer current."}
+                turn = self._speech_turns[context.speech_handle.id]
                 result = await action()
-                self.journal.record("business_result", turn_id=self._speech_turns[context.speech_handle.id],
+                self.journal.record("business_result", turn_id=turn,
                                     response_id=context.speech_handle.id, call_id=context.function_call.call_id,
-                                    name=name, result=result)
+                                    name=name, result={key: result[key] for key in
+                                                     ("ok", "error", "operation_id", "replayed") if key in result})
                 return result
         task = asyncio.create_task(work())
         try:

@@ -10,11 +10,11 @@ from opentalk.tools.database_tools import DatabaseTools
 
 
 class BookingAgent(ConversationAgent):
-    def __init__(self, tools: DatabaseTools, journal, *, reasoning_model=None, reasoning_options=None):
+    def __init__(self, tools: DatabaseTools, **options):
         self.booking_tools = tools
         super().__init__(
             instructions=(PROJECT_ROOT / "config/booking_prompt.md").read_text(encoding="utf-8"),
-            journal=journal, reasoning_model=reasoning_model, reasoning_options=reasoning_options,
+            **options,
             clock=lambda: tools.service.clock().astimezone(tools.service.timezone),
         )
 

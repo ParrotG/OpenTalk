@@ -11,6 +11,7 @@ from opentalk.domain.booking_service import BookingService
 from opentalk.llm.smoke import run_smoke
 from opentalk.storage.repository import BookingRepository
 from opentalk.voice.config import load_voice_config
+from opentalk.voice.factories import agent_factory
 from opentalk.voice.session import open_session
 
 pytestmark = pytest.mark.live_llm
@@ -35,7 +36,7 @@ def test_live_sql_booking_update_cancel(tmp_path):
     service, day, config = make_service(tmp_path)
 
     async def scenario():
-        async with open_session(text_only=True, service=service, voice_config=config) as (session, agent, journal):
+        async with open_session(text_only=True, factory=agent_factory(service=service), voice_config=config) as (session, agent, journal):
             await session.start(agent=agent)
             await session.run(user_input="List all known rooms and find the earliest available intervals, today or any other day.")
             assert any(event["type"] == "business_result" and event["name"] == "query" and event["result"]["ok"]
@@ -65,7 +66,7 @@ def test_live_no_edit_without_confirmation(tmp_path):
     service, day, config = make_service(tmp_path)
 
     async def scenario():
-        async with open_session(text_only=True, service=service, voice_config=config) as (session, agent, _):
+        async with open_session(text_only=True, factory=agent_factory(service=service), voice_config=config) as (session, agent, _):
             await session.start(agent=agent)
             await session.run(user_input=f"I want Room A on {day} from 09:00 to 10:00. Do not edit until I confirm.")
             assert service.list_events() == []
@@ -79,7 +80,7 @@ def test_live_scoped_reasoning(tmp_path):
     service, day, config = make_service(tmp_path)
 
     async def scenario():
-        async with open_session(text_only=True, service=service, voice_config=config) as (session, agent, journal):
+        async with open_session(text_only=True, factory=agent_factory(service=service), voice_config=config) as (session, agent, journal):
             await session.start(agent=agent)
             await session.run(user_input=(
                 "Use escalate_reasoning once to compare these given options: Room A 09:00-10:00 "
@@ -90,7 +91,9 @@ def test_live_scoped_reasoning(tmp_path):
                        for event in journal.report["events"])
             results = [event for event in journal.report["events"]
                        if event["type"] == "tool_result" and event["name"] == "escalate_reasoning"]
-            assert results and ast.literal_eval(results[0]["output"])["ok"] is True
+            outputs = [item for item in session.history.items if item.type == "function_call_output"
+                       and item.call_id == results[0]["call_id"]]
+            assert results and ast.literal_eval(outputs[0].output)["ok"] is True
             assert service.list_events() == []
             await session.run(user_input="Thanks. Just acknowledge; do not use tools.")
             assert len([event for event in journal.report["events"] if event["type"] == "reasoning_started"]) == 1

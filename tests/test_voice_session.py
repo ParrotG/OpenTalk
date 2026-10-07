@@ -17,6 +17,7 @@ from opentalk.agents.base import ConversationAgent
 from opentalk.domain.booking_service import BookingService
 from opentalk.storage.repository import BookingRepository
 from opentalk.voice.config import load_voice_config
+from opentalk.voice.factories import agent_factory
 from opentalk.voice.session import create_vad, open_session
 from voice_fakes import FakeSTT, FakeTTS, PlaybackSink, QueueAudioInput, ScriptedLLM
 
@@ -46,7 +47,7 @@ def test_native_queries_natural_confirmation_edits_and_logs(tmp_path):
     }, replies={"Book nine": "Reserve Room A, January 2, 09:00 to 10:00. Shall I proceed? "})
 
     async def scenario():
-        async with open_session(text_only=True, service=service, voice_config=config, model=model) as (session, agent, journal):
+        async with open_session(text_only=True, factory=agent_factory(service=service), voice_config=config, model=model) as (session, agent, journal):
             assert isinstance(agent, ConversationAgent)
             assert {tool.info.name for tool in find_function_tools(type(agent))} == {"query", "edit", "escalate_reasoning"}
             await session.start(agent=agent)
@@ -58,11 +59,12 @@ def test_native_queries_natural_confirmation_edits_and_logs(tmp_path):
             await session.run(user_input="Please do")
             assert len(service.list_events()) == 3
             assert (await agent.booking_tools.query("SELECT status FROM bookings"))["rows"] == [{"status": "cancelled"}]
-            await journal.save(service)
-            await journal.save(service)
-        report = json.loads(journal.path.read_text())
-        assert len(report["operation_events"]) == 3
-        assert {item["role"] for item in report["messages"].values()} == {"user", "assistant"}
+            await journal.save()
+            await journal.save()
+        report = journal.report
+        history = journal.store.history(session.userdata.session_id)["items"]
+        assert len(service.list_events()) == 3
+        assert {item["role"] for item in history if item["type"] == "message"} == {"user", "assistant"}
         calls = [event for event in report["events"] if event["type"] == "business_result"]
         assert [call["name"] for call in calls[:2]] == ["query", "query"]
         assert len({event["event_id"] for event in report["events"]}) == len(report["events"])
@@ -73,7 +75,7 @@ def test_language_preference_survives_mixed_input(tmp_path):
     service, config = setup(tmp_path)
 
     async def scenario():
-        async with open_session(text_only=True, service=service, voice_config=config, model=ScriptedLLM()) as (session, agent, journal):
+        async with open_session(text_only=True, factory=agent_factory(service=service), voice_config=config, model=ScriptedLLM()) as (session, agent, journal):
             await session.start(agent=agent)
             await session.run(user_input="请用英语回复")
             await session.run(user_input="帮我 check Room A tomorrow")
@@ -123,7 +125,7 @@ def test_audio_transcription_query_and_speech_output(tmp_path):
     model = ScriptedLLM({"list rooms": ("query", {"sql": "SELECT DISTINCT room FROM slots"})})
 
     async def scenario():
-        async with open_session(service=service, voice_config=config, model=model,
+        async with open_session(factory=agent_factory(service=service), voice_config=config, model=model,
                                 stt_model=FakeSTT("list rooms"), tts_model=FakeTTS()) as (session, agent, journal):
             microphone, speaker = QueueAudioInput(), PlaybackSink()
             session.input.audio, session.output.audio = microphone, speaker
@@ -137,8 +139,8 @@ def test_audio_transcription_query_and_speech_output(tmp_path):
             assert speaker.frames
             assert session.options.turn_handling["turn_detection"] == "stt"
             assert session.options.interruption["mode"] == "vad"
-            users = [message for message in journal.report["messages"].values() if message["role"] == "user"]
-            assert len(users) == 1 and users[0]["text"] == "list rooms"
+            users = [item for item in session.history.items if item.type == "message" and item.role == "user"]
+            assert len(users) == 1 and users[0].text_content == "list rooms"
             assert any(event["type"] == "business_result" and event["name"] == "query"
                        for event in journal.report["events"])
     asyncio.run(scenario())
@@ -151,7 +153,7 @@ def test_interruption_stops_obsolete_audio(tmp_path):
     synthesizer = FakeTTS()
 
     async def scenario():
-        async with open_session(service=service, voice_config=config, model=model,
+        async with open_session(factory=agent_factory(service=service), voice_config=config, model=model,
                                 stt_model=FakeSTT(), tts_model=synthesizer) as (session, agent, journal):
             speaker = PlaybackSink()
             session.output.audio = speaker
@@ -182,7 +184,7 @@ def test_obsolete_edit_is_rejected(tmp_path):
     service, config = setup(tmp_path)
 
     async def scenario():
-        async with open_session(text_only=True, service=service, voice_config=config, model=ScriptedLLM()) as (_, agent, _):
+        async with open_session(text_only=True, factory=agent_factory(service=service), voice_config=config, model=ScriptedLLM()) as (_, agent, _):
             context = context_for(agent, turn="old")
             agent.turn_id = "new"
             assert (await agent.edit(context, **edit_arguments()))["error"] == "stale_response"
@@ -195,7 +197,7 @@ def test_started_edit_survives_speech_cancellation_and_is_logged(tmp_path, monke
     started, release = threading.Event(), threading.Event()
 
     async def scenario():
-        async with open_session(text_only=True, service=service, voice_config=config, model=ScriptedLLM()) as (_, agent, journal):
+        async with open_session(text_only=True, factory=agent_factory(service=service), voice_config=config, model=ScriptedLLM()) as (_, agent, journal):
             original = agent.booking_tools._edit
 
             def delayed(*args):
@@ -208,6 +210,8 @@ def test_started_edit_survives_speech_cancellation_and_is_logged(tmp_path, monke
             assert await asyncio.to_thread(started.wait, 1)
             context.speech_handle.interrupted = True
             task.cancel()
+            agent.turn_id = "new-turn"
+            agent._speech_turns.clear()
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
@@ -222,7 +226,7 @@ def test_text_entrypoint_reads_pipe_and_saves(tmp_path, monkeypatch, capsys):
     service, config = setup(tmp_path)
     model = ScriptedLLM({"list rooms": ("query", {"sql": "SELECT DISTINCT room FROM slots"})})
     monkeypatch.setattr(text, "open_session", lambda **kwargs: open_session(
-        text_only=True, service=service, voice_config=config, model=model))
+        text_only=True, factory=agent_factory(service=service), voice_config=config, model=model))
     read_fd, write_fd = os.pipe()
     with os.fdopen(write_fd, "w") as writer:
         writer.write("list rooms\n/quit\n")
@@ -230,7 +234,9 @@ def test_text_entrypoint_reads_pipe_and_saves(tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(text.sys, "stdin", reader)
         asyncio.run(text.converse(None))
     assert "Assistant>" in capsys.readouterr().out
-    assert len(list(config.log_directory.glob("*.json"))) == 1
+    from opentalk.sessions.config import load_session_config
+    from opentalk.sessions.store import SessionStore
+    assert len(SessionStore(load_session_config().database_path).list()) == 1
 
 
 def test_scoped_reasoning_then_default_model_resumes(tmp_path):
@@ -240,7 +246,7 @@ def test_scoped_reasoning_then_default_model_resumes(tmp_path):
     strong = ScriptedLLM()
 
     async def scenario():
-        async with open_session(text_only=True, service=service, voice_config=config,
+        async with open_session(text_only=True, factory=agent_factory(service=service), voice_config=config,
                                 model=main, reasoning_model=strong) as (session, agent, journal):
             await session.start(agent=agent)
             await asyncio.wait_for(session.run(user_input="complex"), timeout=5)

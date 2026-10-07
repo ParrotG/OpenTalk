@@ -4,7 +4,7 @@ OpenTalk is a voice demo project for learning and validating streaming voice age
 
 ## Status
 
-The meeting-room booking backend, configurable streaming LLM provider, and Soniox streaming ASR/TTS providers are implemented. Providers return native LiveKit `LLM`, `STT`, and `TTS` instances. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. ASR can replay a local audio file, and TTS can stream text into a WAV output, without a frontend or LiveKit Server. A native LiveKit AgentSession now connects the providers, Silero VAD, and booking tools. Local microphone console and headless text entrypoints are available; browser integration is pending. The booking CLI and offline tests require no API credentials.
+The meeting-room booking backend, configurable streaming LLM provider, and Soniox streaming ASR/TTS providers are implemented. Providers return native LiveKit `LLM`, `STT`, and `TTS` instances. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. ASR can replay a local audio file, and TTS can stream text into a WAV output, without a frontend or LiveKit Server. A native LiveKit AgentSession now connects the providers, Silero VAD, and booking tools. Local microphone console and headless text entrypoints are available; browser integration is pending. Independent SQLite sessions, normal-completion resume, text session commands, and a local control/token API are available. The booking CLI and offline tests require no API credentials.
 
 See the [development plan](docs/开发计划.md) for the agreed architecture, module boundaries, and acceptance criteria. The development plan is written in Chinese.
 
@@ -16,7 +16,7 @@ See the [development plan](docs/开发计划.md) for the agreed architecture, mo
 - Soniox streaming ASR and TTS for the initial remote implementation.
 - OpenAI or OpenAI-compatible streaming Chat Completions for the LLM, with a configurable endpoint and model.
 - Silero VAD for speech activity detection.
-- SQLite for meeting-room bookings and operation audit; local JSON for transcripts and session events.
+- Separate SQLite stores for bookings, resumable session history/userdata, and bounded diagnostics/metrics.
 - In-memory active session state, without Redis in the first version.
 
 ASR, LLM, and TTS providers will be independently configurable. A local implementation is planned after the remote baseline; local models have not been selected.
@@ -156,7 +156,7 @@ The text entrypoint uses the same native agent and tool execution, reads standar
 
 Ask for all known rooms or available intervals across dates. To reserve, move, or cancel a reservation, describe the request and answer the assistant’s confirmation question naturally. The agent should ask again after changed details and should not interpret a refusal, question, or interrupted explanation as confirmation. Multilingual user input and generated LLM responses are preserved. `请用英语回复` / `please reply in English` and `请用中文回复` / `please reply in Chinese` set the explicit reply preference and subsequent TTS language.
 
-Public session/VAD settings are in `config/voice.toml`; backend and provider settings remain independent. Reports under `logs/voice/<session_id>.json` upsert messages by native message ID and record tool results separately. Room/console mode saves snapshots every configured interval (one second by default); text mode saves after each turn. Both save on close. Snapshots replace files atomically, and generated text is not claimed to be exact spoken text. Already started transactions retain their result even if speech is cancelled.
+Public VAD settings are in `config/voice.toml`; persistence and lifecycle limits are in `config/sessions.toml`. Native `session.history` and typed `session.userdata` are checkpointed to `data/sessions.sqlite3`, independently of booking storage. Metrics, bounded diagnostics, and optional content-free OpenTelemetry traces are kept in `logs/telemetry.sqlite3`. Interim ASR revisions and full generated responses are no longer duplicated into session JSON snapshots. Text saves after each turn; all modes periodically checkpoint and save on close. Already started transactions retain their result even if speech is cancelled.
 
 For a LiveKit room worker, configure the server URL and backend credentials, then run:
 
@@ -165,9 +165,32 @@ PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker dev
 # Use start instead of dev for worker operation without development reload.
 ```
 
-The agent registers as `opentalk-booking`; a room client must explicitly dispatch that agent name. This entrypoint is ready for a later browser client, but this change does not add a browser, token service, or LiveKit Server.
+The agent registers as `opentalk-booking`; a room client must explicitly dispatch that agent name. The local session API supplies tokens and named dispatch metadata for this worker; a browser and LiveKit Server deployment are still pending.
 
 Validation records and current test coverage are listed in the realtime conversation guide. Offline tests use the real native session and tool runner with scripted streaming provider doubles. They cover multiple SQL queries per turn, edits, language preference, audio input/output, interruption, stale tool calls, transaction completion after speech cancellation, atomic reports, scoped reasoning, and headless standard-input interaction. Silero also performs actual local inference on silence. Acoustic barge-in, provider timing, and microphone quality require manual testing. See the Chinese [realtime conversation guide](docs/实时语音验证指南.md).
+
+## Session management and resume
+
+Use the same text entrypoint, or select the business-free conversation agent:
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.voice.text
+PYTHONPATH=backend uv run --locked python -m opentalk.voice.text --agent conversation
+```
+
+No models are initialized until a conversation starts. `/session`, `/session list`, `/session show ID`, `/session history [ID]`, and `/session help` inspect local state without credentials or API charges. `/session end` finishes normally; `/session new` starts another conversation; `/session resume ID` restores a completed session with the same session ID and a new attempt ID. `/quit` and normal EOF also finish normally. Cancellation, provider/persistence failures, and expired worker leases cannot be resumed. A resumed agent receives bounded native history and language preference; stored tool calls are never replayed.
+
+The separate SQLite session service has no booking dependency. The booking adapter lives in `voice/factories.py`; the conversation adapter uses no booking database. Default context is limited to 120 items, diagnostics to 512 queued / 10000 stored events and 7 days, and each running attempt to one hour. Actual conversation history is retained once per native item ID and grows with actual conversation, independently of diagnostic retention.
+
+Start the local control API for the later browser:
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.sessions.api
+```
+
+It listens on `127.0.0.1:8080` and provides session creation/resume, listing, paginated history, signed room tokens, and idempotent end requests. API and worker share the session database. `LIVEKIT_URL` is the internal server address; `LIVEKIT_PUBLIC_URL` overrides the browser-facing address. Web clients must request normal end and wait for the final checkpoint; unsolicited participant disconnects are conservatively failed.
+
+See the Chinese [session validation guide](docs/会话管理验证指南.md) for CLI acceptance steps, configuration, lifecycle semantics, API payloads, and official references. Existing `logs/voice` JSON artifacts are historical and are not automatically imported.
 
 ## Legacy booking CLI
 

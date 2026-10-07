@@ -1,0 +1,15 @@
+[sessions]
+database_path = "data/sessions.sqlite3"
+telemetry_database_path = "logs/telemetry.sqlite3"
+heartbeat_seconds = 5.0
+lease_seconds = 60.0
+context_max_items = 120
+pending_event_limit = 512
+telemetry_max_events = 10000
+telemetry_retention_days = 7
+api_host = "127.0.0.1"
+api_port = 8080
+public_livekit_url = "ws://localhost:7880"
+token_ttl_seconds = 900
+max_session_seconds = 3600
+tracing_enabled = false
