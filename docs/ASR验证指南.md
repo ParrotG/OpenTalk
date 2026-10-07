@@ -2,9 +2,9 @@
 
 ## 已实现范围
 
-`opentalk.asr.provider.create_stt()` 返回官方 `livekit.plugins.soniox.STT` 实例，符合 LiveKit 原生 STT 接口。未来可直接交给 AgentSession；当前没有增加 AgentSession、LiveKit 房间、前端、VAD、TTS 或 ASR → LLM 编排。
+`opentalk.asr.provider.create_stt()` 返回官方 `livekit.plugins.soniox.STT` 实例，符合 LiveKit 原生 STT 接口，现已接入项目的 AgentSession 和网页语音链路。本指南专门验证独立文件回放，不启动 LiveKit 房间、前端、VAD、LLM 或 TTS；完整交互见 [网页语音验证指南](网页语音验证指南.md)。
 
-锁定的 LiveKit Agents 与 Soniox 插件版本均为 1.8.5，PyAV 为 18.1.0。本次增加 Soniox 插件和显式 PyAV 依赖，保留已有依赖版本。
+锁定的 LiveKit Agents 与 Soniox 插件版本均为 1.8.5，PyAV 为 18.1.0。安装沿用仓库锁文件。
 
 ## 配置与运行
 

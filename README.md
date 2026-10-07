@@ -1,226 +1,709 @@
 # OpenTalk
 
-OpenTalk is a voice demo project for learning and validating streaming voice agents and reliable backend operations.
+OpenTalk is a browser-based, realtime voice-assistant stack. It combines WebRTC transport, a native
+LiveKit Agents session, independently replaceable streaming ASR / LLM / TTS providers, tool-using
+backend services, and durable session history. The repository includes a text-only agent entry point,
+a local microphone console, a minimal React/Next.js web client, Docker Compose packaging, and a
+booking database workload that exercises the full agent-to-service path.
 
-## Status
+The booking workload is used as a concrete reference for a talkbot: users ask in natural language
+about meeting rooms, desks, or equipment, the agent queries real SQLite data, asks for clarification
+or confirmation, and writes changes through a constrained, transactional service API. The same core
+session, provider, and tool orchestration can be reused for other voice-enabled backend tasks.
 
-The meeting-room booking backend, configurable streaming LLM provider, and Soniox streaming ASR/TTS providers are implemented. Providers return native LiveKit `LLM`, `STT`, and `TTS` instances. Text tests exercise real DeepSeek tool calls against temporary SQLite databases. ASR can replay a local audio file, and TTS can stream text into a WAV output, without a frontend or LiveKit Server. A native LiveKit AgentSession now connects the providers, Silero VAD, and booking tools. Local microphone console and headless text entrypoints are available; a minimal LiveKit starter browser frontend is available with text/voice switching, waveform, transcript, collapsible session/service controls, and system-following dark mode. Independent SQLite sessions, normal-completion resume, text session commands, and a local control/token API are available. The booking CLI and offline tests require no API credentials.
+---
 
-See the [development plan](docs/开发计划.md) for the agreed architecture, module boundaries, and acceptance criteria. The development plan is written in Chinese.
+## 1. What OpenTalk is
 
-## Agreed architecture
+- A streaming speech pipeline: microphone audio -> VAD/STT -> agent -> LLM/tools -> TTS -> browser
+  playback, with interim text and cancellation.
+- A reusable `ConversationAgent` and a booking-specific `BookingAgent` that adds business tools.
+- Provider factories for Soniox streaming STT, OpenAI-compatible streaming Chat Completions, and
+  Soniox streaming TTS. Each provider is configured independently and returns a native LiveKit
+  plugin instance.
+- A local CPU Silero VAD used for speech activity, endpointing support, and barge-in.
+- A reference office-booking service with a normalised SQLite schema, read-only SQL query tool, a
+  constrained add/delete/update tool, idempotent operations, ownership checks, and capacity checks.
+- Independent SQLite stores for business data, resumable session history, and bounded telemetry /
+  traces.
+- A minimal Next.js client that connects directly to LiveKit, supports text and voice modes, shows
+  transcripts and a waveform, and talks to a same-origin session-control API.
+- Local and Docker startup paths, component-level smoke tools, offline tests, and optional live
+  integration tests.
 
-- Python 3.11 with uv for the backend.
-- React/Next.js with pnpm for the browser frontend, based on the LiveKit starter.
-- LiveKit Agents and WebRTC for realtime voice sessions.
-- Soniox streaming ASR and TTS for the initial remote implementation.
-- OpenAI or OpenAI-compatible streaming Chat Completions for the LLM, with a configurable endpoint and model.
-- Silero VAD for speech activity detection.
-- Separate SQLite stores for bookings, resumable session history/userdata, and bounded diagnostics/metrics.
-- In-memory active session state, without Redis in the first version.
+The rest of this document describes the task, architecture, design choices, incremental development
+path, implementation lessons, future work, and how to configure and run the project.
 
-ASR, LLM, and TTS providers will be independently configurable. A local implementation is planned after the remote baseline; local models have not been selected.
+---
 
-## Required behavior
+## 2. Talkbot task: functional and non-functional requirements
 
-- Stream ASR results, LLM text, and TTS audio independently.
-- Begin audio playback before the complete assistant response has been generated.
-- Support interruptions and changes of intent without reviving stale responses or repeating writes.
-- Preserve mixed Chinese and English input within an utterance and across turns.
-- Maintain only `preferred_response_language` as application-level language state.
-- Distinguish user, assistant, system, and tool content by source.
-- Record transcripts and session events throughout development.
-- Ask for natural-language confirmation before reservation edits; keep edits transactional and retries idempotent.
+A talkbot is not just speech recognition followed by a chat response. It must maintain a realtime
+conversation, decide when the user has finished speaking, orchestrate tools, stream text and audio
+concurrently, react to interruptions, and persist enough state for a coherent multi-turn experience.
 
-## Configuration and secrets
+### 2.1 Reference task
 
-Public backend settings are in `config/backend.toml`: database path, timezone (default `Asia/Singapore`), fixed demo user and seed schedule. `config/booking_demo.json` describes users, resources and initial occupancy; resource discovery comes from SQLite rather than a configured room allowlist. `config/booking_prompt.md` contains the booking instructions; `config/booking_agent.toml` contains read-query resource limits. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. `config/asr.toml` configures the Soniox endpoint, model, language hints, sample rate, endpoint delay, and file replay settings.
+The reference workload is an office resource-booking assistant:
 
-The LLM, ASR, and TTS factories load secrets from the root `.env.local` file or process environment variables. Process environment variables take precedence. The Python application explicitly loads the root file, independently of the working directory. `config/tts.toml` configures the synthesis endpoint, model, voice, primary language, sample rate, speed, timeouts, and simulated text input settings.
+- The user talks or types in Chinese, English, or a mixture of both.
+- The assistant can discover resources, inspect availability, list the current user's bookings, and
+  answer non-standard questions by querying the business database.
+- For a mutation, the assistant must describe the exact intended change and obtain natural-language
+  confirmation in a later user turn.
+- The assistant can add a booking, cancel a booking, or move a booking to a new resource/time.
+- The assistant must not change another user's data and must not silently bypass ownership,
+  capacity, time-window, or idempotency checks.
+- The backend service is intentionally replaceable; new services should be addable as tools without
+  rewriting the session or transport layers.
 
-The remote implementation requires:
+### 2.2 Functional requirements
 
-- `SONIOX_API_KEY` and valid Soniox model and voice settings.
-- `DEEPSEEK_API_KEY` for the current official DeepSeek endpoint, or a configurable credential variable for another compatible provider.
-- A configured LLM model that supports streaming and tool calls.
-- Room worker mode needs a reachable LiveKit Server. Both room and local console modes need `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` with this SDK setup. For `livekit-server --dev`, use `devkey` / `secret` and `LIVEKIT_URL=ws://localhost:7880`. Headless text needs no LiveKit settings.
+| Area | Requirement |
+| --- | --- |
+| Conversation | Natural multi-turn voice or text interaction, with concise spoken-style answers. |
+| Streaming | ASR, LLM output, and TTS audio stream independently; playback can start before the full answer is generated. |
+| Turn handling | Detect start/end of user speech and avoid sending partial ASR hypotheses to the LLM. |
+| Interruption | A user can barge in while the assistant is speaking; the obsolete response and queued audio stop, but already committed business work remains consistent. |
+| Multilingual input | Preserve Chinese/English and code-switched content within an utterance and across turns. |
+| Language preference | Track an optional `preferred_response_language` and apply it to later assistant output/TTS where supported. |
+| Tools | Allow the model to inspect data and perform constrained business actions with structured arguments. |
+| Confirmation | Mutating actions require an explicit later-turn agreement; the backend still enforces the real safety rules. |
+| Persistence | Keep resumable conversation history and user data separate from bounded diagnostics and business records. |
+| Traces | Record model/tool/session events and optional OpenTelemetry spans for debugging and latency analysis. |
+| Frontend | Minimal browser UI for text chat, voice capture, playback, transcript, connection state, and session selection. |
 
-Provider credentials and LiveKit API secrets must remain on the backend. The browser will receive only public settings and short-lived connection tokens. Server secrets must not use `NEXT_PUBLIC_*` variables.
+### 2.3 Non-functional requirements
 
-Ignore rules exclude secret files and runtime data. `.env.example` contains placeholders; copy it to `.env.local` or set the credential in your process environment. Do not commit real `.env.local` files, databases, transcripts, logs, or recordings. Booking-only commands do not load or require model credentials.
+| Area | Requirement and current design response |
+| --- | --- |
+| Latency | Use streaming plugins, disable speculative pre-generation, keep a fast default model profile, and allow TTS to start as soon as text is available. |
+| Interruption responsiveness | Keep the microphone open during playback; use Silero VAD plus LiveKit's native interruption handling rather than an app-level "stop audio" hack. |
+| Reliability | Use explicit session attempts, heartbeats, leases, stale-response checks, transactional writes, and idempotent request keys. |
+| Safety | Fixed caller identity for the reference service, read-only SQL by default, write tools constrained to the caller, and backend validation independent of model wording. |
+| Observability | Record native model metrics, tool outcomes, usage, and optional OTel spans without unbounded logging of private audio or full prompts. |
+| Replacability | ASR, LLM, and TTS are selected by configuration and wrapped in small factories. Business logic does not import voice or model SDKs. |
+| Portability | Run as a text agent, local Python services, or a Docker Compose stack. The browser only receives short-lived room tokens. |
+| Resource bounds | Query row/step/time limits, bounded conversation context, bounded diagnostic queues, telemetry retention, and a maximum session duration. |
+| Privacy | Provider credentials stay on the backend. The browser receives no model or LiveKit API secrets. |
+| Maintainability | Small modules, native framework interfaces, offline component tests, and optional paid live tests. |
+| Current scale | Optimised for a local, single-user deployment with SQLite and an in-process worker. Cloud concurrency and multi-tenancy are future work. |
 
-## Streaming LLM and text tool tests
+---
 
-The current configuration uses `deepseek-flash` at `https://api.deepseek.com`, with `DEEPSEEK_API_KEY` and thinking disabled. Model identifiers and provider-specific request options live in configuration, not business code. Changing providers requires checking streaming and tool-call support and adjusting `extra_body` as appropriate.
+## 3. Architecture, technology choices, and internal design
 
-Run the paid streaming smoke test after configuring the credential:
+### 3.1 Architecture diagram
 
-```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.llm.smoke
+```mermaid
+flowchart LR
+    subgraph Client["Browser client"]
+        UI["React / Next.js UI<br/>text + voice, transcript, waveform, session list"]
+    end
+
+    subgraph Control["Session control plane"]
+        API["aiohttp session API<br/>allocate room, issue short-lived token, history, end"]
+        SDB[("Session history SQLite<br/>sessions, attempts, requests, history")]
+    end
+
+    subgraph Transport["Realtime transport"]
+        LK["LiveKit Server<br/>WebRTC media + data channels"]
+    end
+
+    subgraph Runtime["LiveKit Agents worker"]
+        AS["AgentSession orchestration<br/>turn detection, interruption, output routing"]
+        VAD["Silero VAD<br/>local CPU speech activity"]
+        AG["ConversationAgent / BookingAgent<br/>instructions, tools, reasoning escalation"]
+    end
+
+    subgraph Providers["Streaming providers, independently replaceable"]
+        STT["Soniox STT<br/>interim + final transcripts, endpointing"]
+        LLM["DeepSeek via OpenAI-compatible API<br/>streaming text + tool calls"]
+        TTS["Soniox TTS<br/>incremental text to audio"]
+    end
+
+    subgraph Business["Reference business service"]
+        TOOLS["Agent tools<br/>query / edit / escalate_reasoning"]
+        SVC["BookingService<br/>ownership, capacity, idempotency"]
+        BDB[("Booking SQLite<br/>users, resources, slots, slot_users, operations")]
+    end
+
+    TEL[("Bounded telemetry and traces SQLite<br/>metrics, events, optional OTel spans")]
+
+    UI -->|REST| API
+    API --> SDB
+    API -->|room dispatch and JWT| LK
+    UI <-->|WebRTC audio and data| LK
+    LK <--> AS
+    AS --> VAD
+    AS <--> STT
+    AS <--> LLM
+    AS <--> TTS
+    AS --> AG
+    AG --> TOOLS
+    TOOLS --> SVC
+    SVC --> BDB
+    AS --> TEL
+    AG -.->|one isolated analysis request| LLM
 ```
 
-The smoke test consumes the actual LiveKit `LLM.chat()` stream and reports non-empty text chunk count, time to first content, elapsed time, output, and usage. It requires multiple text chunks and makes no booking writes.
+### 3.2 Core technology choices and why they were made
 
-Run offline tests, or explicitly opt into paid network tests:
+#### LiveKit as the realtime framework
 
-```bash
-uv run --locked pytest -q
-uv run --locked pytest tests/test_llm_live.py --live-llm -q
+LiveKit provides the room, WebRTC transport, media routing, data channel, participant lifecycle, and
+native LiveKit Agents primitives. The Python `AgentSession` composes STT, LLM, TTS, VAD, turn
+detection, output routing, tool execution, and interruption handling behind one session abstraction.
+This avoids building a custom WebSocket audio protocol, jitter buffer, playback queue, and barge-in
+state machine.
+
+The browser stack is also native to LiveKit: `livekit-client` and `@livekit/components-react` can use
+the same room model, participant audio, data messages, and RPC controls as the server. LiveKit Server
+can dispatch a named agent into a newly allocated room, so the frontend does not need custom media
+signalling.
+
+#### Soniox for streaming STT and TTS
+
+Soniox offers low-latency streaming speech-to-text and text-to-speech APIs with native LiveKit
+plugins. The STT path returns interim and final segments, supports endpointing and language hints,
+and can preserve mixed Chinese/English text. The TTS path accepts incremental text, buffers it at a
+sentence-like boundary, and returns PCM audio while generation is still in progress.
+
+Using one provider for STT and TTS also keeps credential and operational complexity low for the
+reference deployment. The providers are not hard-wired: any LiveKit-compatible STT or TTS plugin
+that satisfies the same streaming contract can be substituted. Multilingual quality, language
+identification, code-switch handling, pronunciation, and latency are properties of the chosen
+provider and model, not guarantees of the orchestration layer.
+
+#### OpenAI-compatible DeepSeek for the LLM
+
+The default LLM profile uses `deepseek-flash` at `https://api.deepseek.com` through an
+OpenAI-compatible Chat Completions endpoint. DeepSeek is a practical low-latency default for
+streaming text and tool calls, and the OpenAI-compatible interface keeps the application portable
+across many providers. `config/llm.toml` controls base URL,
+model, credential variable, temperature, token limit, timeout, and provider-specific `extra_body`
+options.
+
+The default profile disables thinking (`thinking.type = "disabled"`) so ordinary responses start
+quickly. A separate reasoning profile can be enabled for an isolated stronger analysis request, as
+described in the escalation section below. Any replacement model must support streaming and tool
+calls; provider-specific options must be checked rather than assumed.
+
+#### Silero VAD
+
+Silero VAD runs locally on CPU through the LiveKit plugin. It is inexpensive, has no network round
+trip, and is sufficient to detect speech start/stop and trigger interruption. LiveKit uses the VAD
+signal together with STT endpointing: STT determines the text content and completed turn, while VAD
+helps detect user speech while the assistant is speaking. This combination keeps interruption
+latency low without sending extra audio to a dedicated service.
+
+#### SQLite stores
+
+Business records, session history, and bounded diagnostics use separate SQLite files. This gives the
+reference deployment a zero-ops persistence model with transactions, stable IDs, and simple local
+backups; the session and telemetry stores enable WAL. The separation is intentional:
+
+- booking data is owned by the business service;
+- session history is needed for resume and prompt context;
+- telemetry/traces are bounded diagnostics that can be dropped by retention policy.
+
+SQLite is not the target for high-concurrency cloud deployment; the future-work section discusses
+the changes that would be required for that environment.
+
+#### React / Next.js frontend
+
+The web client is a minimal Next.js application built on the LiveKit browser starter patterns. It
+uses native LiveKit components and RPCs for text and voice modes, so it is naturally compatible with
+the LiveKit Server and agent worker. Next.js route handlers proxy control-plane calls to the local
+session API, which prevents the browser from speaking directly to an internal API and keeps server
+secrets out of the client bundle.
+
+### 3.3 Streaming ASR + LLM + TTS orchestration
+
+The realtime path is designed around native LiveKit AgentSession nodes rather than several
+application-managed queues:
+
+1. The browser publishes microphone audio into a LiveKit room.
+2. The agent worker subscribes to that audio and feeds it to the configured STT plugin. Audio also
+   flows through Silero VAD in parallel.
+3. Soniox STT emits interim hypotheses and final transcript segments. Interim text is used for live
+   display, but the agent does not invoke the LLM for every partial hypothesis.
+4. Turn detection is configured as `stt`: endpointing decides when the user has finished a turn.
+   `preemptive_generation` is disabled, so there is no speculative generation from incomplete text.
+5. The completed user turn enters the LLM node. `ConversationAgent.llm_node` trims the chat context,
+   adds trusted runtime context (date/time, business timezone, current UID), applies the preferred
+   reply language, and then calls the native streaming LLM.
+6. The LLM streams content chunks. If it emits a tool call, LiveKit executes the registered tool
+   handler, appends the tool result to the model context, and continues the same agent turn up to the
+   tool-step limit configured in `config/voice.toml`.
+7. Assistant text chunks are emitted to the output path. The TTS node receives the same stream
+   incrementally; the Soniox plugin buffers text at a sentence-like boundary and returns audio frames
+   over its WebSocket while text generation is still running.
+8. Audio frames are written into the LiveKit room and played by the browser. Text output is also
+   available for the transcript and can be used without audio in text mode.
+
+Because each stage is a streaming native node, first audio does not wait for the complete LLM answer.
+The exact amount of overlap visible in a short utterance depends on model latency and text length; a
+multi-sentence answer is the clearest way to observe audio-before-input-end behaviour.
+
+### 3.4 Why this design supports barge-in natively
+
+Barge-in is a first-class session event in this design:
+
+- The user's microphone remains open while assistant audio is playing.
+- Incoming speech is visible to both STT and Silero VAD.
+- LiveKit is configured with interruption mode `vad`, a short `min_interruption_duration`, and
+  `resume_false_interruption = false`.
+- When sustained user speech is detected, the active `SpeechHandle` is marked interrupted. The
+  framework cancels the current LLM generation and TTS stream, stops further text from being
+  synthesized, and discards audio that has not yet been played.
+- The new user speech is handled as a new turn. The interrupted response cannot keep appending to the
+  new answer or revive a stale tool call.
+
+The agent adds application-level safeguards on top of the framework signal. Tool execution is guarded
+by the current turn ID and the `speech_handle.interrupted` state; a call that becomes stale before it
+starts is rejected. A tool call that has already entered its database transaction is shielded from
+cancellation so the business result is not left ambiguous. Request keys bind a user turn and native
+tool call to an idempotent operation, so retries do not duplicate writes.
+
+In short, barge-in works because one realtime session owns the input audio, model streams, TTS output,
+and playback queue. Stopping an obsolete answer is coordinated by the session, not by an out-of-band
+application command.
+
+### 3.5 Reference backend service: office booking
+
+#### Scenario assumptions
+
+The reference service represents a company resource-booking workflow:
+
+- The current user is fixed by configuration (`demo_user_id` in `config/backend.toml`). There is no
+  login, role system, or delegated booking on behalf of another person.
+- The business timezone is `Asia/Singapore`. Timestamps are stored in UTC. Timestamps supplied
+  without an offset to `edit` are interpreted in the business timezone.
+- Resources include meeting rooms, desk zones, and portable equipment. Resource metadata is a JSON
+  object so new resource attributes can be represented without changing the schema.
+- A reservation is one person's booking on one resource. `capacity` is the number of simultaneous
+  individual reservations a resource can hold, not the number of attendees.
+- Time intervals are half-open `[start, end)`, so a booking that starts exactly when another ends
+  does not conflict.
+- Users may read all resources and reservations for availability reasoning, but may only add,
+  cancel, or move their own reservations.
+
+#### Database design
+
+The business database schema is intentionally small and normalised:
+
+| Table | Purpose |
+| --- | --- |
+| `users(uid, name, department)` | User directory for reservation ownership. |
+| `resources(rid, name, type, location, capacity, metadata)` | Discoverable resources. `capacity` is concurrent reservation capacity; `metadata` is validated JSON. |
+| `slots(sid, rid, starts_at, ends_at)` | Canonical UTC intervals. Overlapping intervals are allowed; an empty slot does not itself consume capacity. |
+| `slot_users(booking_id, sid, uid, operation_id, status, created_at, updated_at)` | One user's reservation. `status` is `active` or `cancelled`; cancellation keeps history and moving preserves `booking_id`. |
+| `operations(operation_id, uid, kind, target_id, version, supersedes, status, request_json, result_json, error_code, created_at, updated_at)` | Durable business operation records with request/result snapshots for idempotency and audit. |
+
+Two convenience views make the agent's queries simpler and safer:
+
+- `reservations` joins bookings, users, slots, and resources.
+- `slot_availability` computes peak occupancy and remaining capacity, including partial overlaps.
+
+When an edit creates a new future interval for an existing resource, the service creates the needed
+`slots` row. That makes discoverable intervals examples rather than opening-hours restrictions.
+
+#### Agent tools
+
+The booking agent exposes two business tools, plus a generic reasoning tool.
+
+`query(sql)` runs exactly one read-only SQLite statement. It opens a read-only connection, enables
+`query_only`, installs an authorizer that denies writes, `ATTACH`, `PRAGMA`, transaction control,
+and dangerous functions, and applies configurable row, virtual-machine-step, and wall-clock limits.
+Results are explicit about truncation. This gives the model flexible access to joins, CTEs,
+aggregates, JSON metadata filters, and date-range searches without granting writes.
+
+`edit(action, resource, starts_at, ends_at, new_resource?, new_starts_at?, new_ends_at?, uid?)`
+supports `add`, `delete`, and `update`. It identifies the caller's reservation by exact resource and
+interval, optionally moves it to a new resource or interval, and rejects attempts to act as another
+UID. The service independently validates future start times, resource existence, ownership,
+same-resource overlap, capacity, and current state. The tool request key is derived from the user
+turn and native tool call, making a retry return the original operation result rather than writing
+twice. A transaction commits the reservation change and the operation outcome together.
+
+`escalate_reasoning(task, message?)` emits a brief acknowledgement and performs one isolated,
+tool-free analysis with a stronger reasoning profile. It returns only the conclusion to the normal
+agent, which continues with `query`/`edit` under the default profile.
+
+Natural-language confirmation is a prompt-level conversation policy: the model must describe the
+exact intended change and wait for a later user turn agreement before calling `edit`. The backend
+does not rely on that wording as an authorisation token; it enforces the real constraints
+independently.
+
+#### Core agent, services, and modules
+
+The code is layered so that the agent is stable while business capabilities are replaceable:
+
+- `ConversationAgent` is the generic core. It owns LiveKit session hooks, preferred language,
+  runtime context injection, stale-response validation, tool execution bookkeeping, logging, and the
+  generic `escalate_reasoning` tool.
+- `BookingAgent` subclasses it and adds only the booking-specific `query` and `edit` tools plus
+  booking instructions.
+- `voice/factories.py` is the composition boundary. It selects an agent key such as `booking` or
+  `conversation` and wires in the appropriate service adapter.
+- `BookingService` and `BookingRepository` contain business rules and SQLite access. They do not
+  import LiveKit or model SDKs.
+- Session persistence and telemetry do not import the booking repository.
+
+Adding another service generally means implementing a domain service, exposing a small tool
+interface with clear descriptions, adding a prompt, and registering an adapter in the factory. The
+session lifecycle, control API, and browser client do not need to change as long as the new service
+provides suitable interfaces.
+
+### 3.6 Session and trace persistence
+
+OpenTalk deliberately separates three kinds of state:
+
+| Store | Contents | Persistence style |
+| --- | --- | --- |
+| Business database | Users, resources, slots, reservations, operations | Durable business data owned by the business service. |
+| Session database | Sessions, attempts, idempotent allocation requests, native conversation history, userdata | Durable conversation state with resume semantics. |
+| Telemetry / tracing database | Model metrics, session events, tool outcomes, usage, optional OTel spans | Bounded diagnostics with retention and event-count limits. |
+
+The session store tracks a logical `session_id` and a per-run `attempt_id`. A session can be
+`pending`, `active`, `completed`, or `failed`. Only normally `completed` sessions are resumable. A
+resume creates a new attempt and a new room name while preserving the logical conversation ID.
+Requests are idempotent, workers renew a heartbeat/lease, abandoned pending allocations expire, and
+the maximum session duration is bounded.
+
+Conversation history is serialised from LiveKit's native `ChatContext` using stable native item IDs.
+Audio, images, metrics, and configuration updates are excluded. `SessionState` is stored as userdata
+and currently contains `session_id`, `attempt_id`, and `preferred_response_language`. The journal
+checkpoints after a conversation item is committed, with a short coalescing delay, and also on
+heartbeat and normal shutdown. Restoring a session feeds the saved history back into a new agent
+instance; old tool results provide context only and are not re-executed.
+
+The session database has a small explicit schema: `sessions` stores the logical session, current
+attempt, mode, room, status, and userdata; `attempts` stores per-run ownership, heartbeat, status,
+and errors; `requests` makes allocation idempotent; and `history` stores serialised native
+`ChatContext` items keyed by `(session_id, item_id)` with an ordering position.
+
+The telemetry store uses a single bounded table,
+`telemetry(event_id, session_id, attempt_id, kind, timestamp, payload_json)`, and upserts stable
+IDs, so repeated checkpoints are safe. It contains model metrics, `response_started` /
+`response_finished`, tool outcomes, errors, usage, and other bounded session events. Optional
+tracing (`tracing_enabled` in `config/sessions.toml`) uses LiveKit's OpenTelemetry integration and a
+SQLite span exporter. Content sharing is disabled for spans, and the resulting trace records
+capture trace/span IDs, parentage, status, duration, and non-PII attributes. Tracing is disabled by
+default.
+
+The split keeps three concerns from contaminating one another: business audit data does not become
+agent history, resumable history is not capped by short-lived diagnostics retention, and diagnostics
+can be trimmed or dropped without affecting the user's conversation or bookings.
+
+### 3.7 Web frontend
+
+The frontend is a small Next.js and React application using the native LiveKit browser stack:
+
+- `livekit-client` handles the WebRTC connection, microphone track, playback, data-channel
+  messages, and RPC calls.
+- `@livekit/components-react` provides session and agent hooks and audio visualisation components.
+- The UI supports a text mode and a voice mode. Text uses LiveKit's native `lk.chat` stream; voice
+  mode enables the microphone and uses a small RPC (`opentalk.set_voice_mode`) to switch output
+  behaviour.
+- Transcript messages follow native segment IDs, so interim revisions replace the same visible
+  message instead of accumulating duplicates.
+- A lightweight service panel checks the session API, LiveKit server, worker health, and provider
+  configuration presence without calling paid provider APIs.
+- Session selection, history, automatic save/close, and resume are handled through the control API.
+- Next.js route handlers proxy control-plane requests to the internal session API, and the browser
+  receives only a short-lived LiveKit JWT. Provider keys and LiveKit API secrets never reach the
+  client bundle.
+
+The client is intentionally minimal, but it is not a mock: it connects to the same LiveKit Server,
+AgentSession, and providers as the backend command-line paths.
+
+### 3.8 Module internals worth knowing
+
+```text
+backend/opentalk/
+  agents/base.py              Generic ConversationAgent: session hooks, language, stale checks,
+                              reasoning escalation, tool execution guard.
+  voice/session.py            Builds and runs the native AgentSession from configured providers,
+                              VAD, histories, persistence, and interruption settings.
+  voice/agent.py              BookingAgent: adds query and edit tools.
+  voice/worker.py             LiveKit room worker and job/service lifecycle.
+  voice/text.py               Text-only console with session commands.
+  voice/room_control.py       Browser voice/text RPC and audio-mode controls.
+  voice/factories.py          Agent composition boundary.
+  asr/provider.py             Soniox STT factory and public config.
+  llm/provider.py             OpenAI-compatible LLM factory and optional reasoning profile.
+  tts/provider.py             Soniox TTS factory and public config.
+  sessions/store.py           Sessions, attempts, requests, history, leases.
+  sessions/tracing.py         Optional OpenTelemetry-to-SQLite exporter.
+  sessions/telemetry.py       Bounded event/metric storage.
+  sessions/api.py             Control API for allocation, tokens, history, and end requests.
+  domain/booking_service.py   Business rules and transaction orchestration.
+  storage/repository.py       SQLite schema access and serialised writes.
+  storage/schema.sql          Business schema and views.
+  tools/database_tools.py     Read-only SQL tool and constrained edit adapter.
+frontend/
+  app/ and components/        LiveKit browser UI and server-side control proxy.
+config/                       Public, non-secret configuration for providers and runtime.
+tests/                        Offline backend tests plus opt-in live LLM tests.
 ```
 
-Live tests are skipped by default even when credentials exist. Current tests use the native AgentSession and temporary SQLite databases to exercise SQL room/range queries, natural confirmation, booking creation, updates, cancellation, abandonment without edits, and scoped reasoning. They assert tool calls and persisted state instead of exact wording.
+The most useful design rule for future talkbot work is that each subsystem has one reason to change:
+providers change when model services change, the agent changes when conversation policy or tools
+change, the business service changes when domain rules change, and session storage changes only when
+persistence semantics change.
 
-## Agent tools and reasoning
+---
 
-`ConversationAgent` in `backend/opentalk/agents/base.py` owns native session hooks, language preference, stale-response checks, logging, and the generic `escalate_reasoning` tool. `BookingAgent` subclasses it and adds exactly two business tools. System instructions require concise spoken language and exclude tables, emoji, Markdown, code blocks, and visual lists from user-facing replies. Runtime context supplies the trusted current UID and business timezone:
+## 4. Incremental development and testing
 
-- `query(sql)`: one read-only SQLite statement, including SELECT, joins, CTEs, aggregates, schema discovery, and date-range searches. A read-only connection and SQLite authorizer reject writes, ATTACH, PRAGMA, transaction control, and extension loading. Configurable row, execution-step, and time limits bound queries; truncated results are explicitly marked.
-- `edit(action, resource, starts_at, ends_at, new_resource?, new_starts_at?, new_ends_at?, uid?)`: add a reservation, cancel a matching reservation, or atomically move it to a replacement interval. It can create an interval that was not seeded. Cancellation retains historical records. Updates preserve the booking ID. Offset-free timestamps use the configured timezone; timestamps are stored in UTC.
+The project was built in independently testable stages. Each stage added one capability while
+preserving the interfaces used by earlier stages.
 
-The prompt asks the assistant to describe the exact change and obtain agreement in a later user turn before calling edit. Ordinary agreement is accepted; there are no fixed confirmation words, host-generated recaps, proposal-version grants, or separate confirmation tools. Confirmation is an LLM conversation policy, not a deterministic authorization guarantee. All local business data is queryable. There is no login flow; the configured fixed UID determines ownership. The backend independently rejects edits of another user’s bookings, including attempts to supply a different UID.
+### 4.1 BookingService as the minimal service
 
-Edits validate future intervals, known resources, caller ownership, own overlapping bookings and peak concurrent resource capacity. Each reservation consumes one capacity unit, and adjacent intervals do not conflict. A request key binds the user turn and native tool call; a retry returns the original outcome, and changed arguments with the same key are rejected. Business changes and operation outcomes commit together; failed moves preserve the original booking. Already started writes finish when speech is interrupted, and stale calls are rejected before execution.
+The first deliverable was a resource-booking domain and repository with no voice or model
+dependencies: SQLite schema, ownership and capacity rules, idempotent operations, a read-only
+administrator CLI, reference fixture initialisation, and offline tests. This established the contract the
+agent would later call.
 
-The default profile disables thinking. `escalate_reasoning(task, message?)` delivers a brief acknowledgement and makes one isolated streaming analysis request with the configurable `[reasoning]` profile in `config/llm.toml`. The current profile uses the same model, thinking enabled, `reasoning_effort = "high"`, an 8192-token limit, and a 60-second timeout. It returns the answer content, not the reasoning trace, and the default agent continues with query/edit. It is limited to one escalation per user turn and never changes the shared/default provider settings.
+### 4.2 LLM, ASR, and TTS developed and tested separately
 
-The stronger request has no tools and receives a self-contained task with relevant facts. This avoids requiring a provider-specific reasoning-history extension to the native tool loop. DeepSeek requires reasoning history to be passed back for thinking requests with tools; see the [official thinking-mode documentation](https://api-docs.deepseek.com/guides/thinking_mode/). Other providers can replace the configured reasoning body or omit the profile to disable escalation.
+The LLM provider was validated with a text streaming smoke tool. Soniox ASR was validated by
+replaying a local media file through the real streaming protocol and observing interim/final events.
+Soniox TTS was validated by feeding incremental text and writing the received PCM stream to a WAV
+file. Offline tests used simulated WebSocket transports; live smoke tests remained opt-in and paid.
+No frontend, room server, or agent was required for these component checks.
 
-## Streaming ASR with a local audio file
+### 4.3 LLM + BookingService text agent
 
-Set `SONIOX_API_KEY` in the process environment or root `.env.local`. Then replay your own recording:
+The text-only console composed the LLM and booking service through the native `AgentSession` and tool
+handlers. It exercised SQL queries, confirmation policy, add/delete/update flows, stale calls, and
+idempotent retries without involving audio devices or LiveKit rooms.
+
+### 4.4 Session and trace management
+
+The session store added durable logical sessions, run attempts, leases, resumable history, and
+idempotent allocation. The telemetry side added bounded model/tool/session events and optional
+OpenTelemetry spans. Text console commands were added for listing, inspecting, ending, and resuming
+sessions.
+
+### 4.5 Web frontend
+
+The minimal Next.js client was adapted from the LiveKit browser starter. It added text/voice
+switching, microphone capture, playback, transcript revision handling, session controls, a service
+status panel, and a same-origin control proxy. It connects directly to LiveKit Server; no custom
+media protocol was introduced.
+
+### 4.6 Docker packaging
+
+The full stack was packaged as separate API, worker, LiveKit, frontend, and initialisation services
+with health checks, isolated named volumes, runtime-injected secrets, and an offline test profile.
+The container entry points use the same Python modules and configuration as local development.
+
+---
+
+## 5. Challenges and design changes
+
+### 5.1 Fixed CRUD tools made the agent rigid
+
+The first business tool design exposed fixed operations such as list resources, get availability,
+create booking, update booking, and delete booking. The model could only follow the narrow shapes
+those tools anticipated. Non-standard questions, ambiguous requests, and queries that needed joins
+or date arithmetic often failed or produced awkward workarounds.
+
+The tool surface was changed to a flexible read path plus constrained writes:
+
+- `query(sql)` can run one read-only statement, including joins, CTEs, aggregates, schema discovery,
+  JSON metadata filters, and date-range searches.
+- `edit(action, resource, starts_at, ends_at, ...)` remains a small, well-validated write surface
+  for add, cancel, and move.
+- The service allows new future intervals to be created for existing resources, so the model is not
+  limited to a pre-seeded slot catalogue.
+
+This significantly improved behaviour on fuzzy, compound, and non-standard natural-language
+requests while keeping writes bounded and auditable. The trade-off is that the model must understand
+the schema and that query performance must be resource-limited; both are handled in the prompt,
+tool description, and query budgets.
+
+### 5.2 Complex questions need more thinking without delaying the first response
+
+Some requests need more analysis than a fast, non-thinking model should spend on the first pass.
+Waiting for a long reasoning trace before saying anything would make the conversation feel
+unresponsive, while always using a slow reasoning model would add latency to ordinary turns.
+
+The current solution keeps the default profile fast and non-thinking, but gives the model an
+`escalate_reasoning` tool. When the model judges that a question is difficult, it can:
+
+1. emit a short acknowledgement immediately;
+2. send a self-contained task and relevant facts to one isolated, stronger analysis request;
+3. receive only the conclusion;
+4. continue with the default profile and the normal `query`/`edit` tools.
+
+Escalation is limited to once per user turn, and it does not mutate shared provider settings.
+
+This is a pragmatic solution for this workload. If the default model were slower, a small, fast
+router could be used to select model strength or reasoning level from question complexity. If a task
+were extremely complex, long-running, or concurrent, a background sub-agent could be started through
+a tool call and its result delivered later. Those remain tool-orchestration patterns rather than
+changes to the transport architecture.
+
+### 5.3 Written-style LLM output is often bad for TTS
+
+By default an LLM may answer with Markdown tables, bullet lists, emoji, code blocks, headings, or
+long written paragraphs. Those formats are poor or invalid input for many TTS systems.
+
+The current system prompt explicitly requires short, natural, spoken-style sentences and forbids
+tables, emoji, Markdown formatting, code blocks, and visual bullet lists in user-facing replies. SQL
+and structured arguments remain inside tool calls, not in spoken text. Where a prompt is not enough,
+a streaming speech normaliser can transform model output into TTS-friendly text while preserving the
+conversation stream.
+
+---
+
+## 6. Future work
+
+### 6.1 Tone and paralinguistic understanding
+
+The current pipeline treats speech as transcribed text. Tone, emotion, hesitation, emphasis, and
+other non-textual cues are not part of the agent's decision context. Future work could add an audio
+understanding tool or replace the ASR + LLM + TTS chain with a speech-to-speech multimodal model
+when such a model provides the required control, latency, and tool-calling behaviour.
+
+### 6.2 MCP for business integrations
+
+The business layer is already separated from the agent, but adding a new service still requires a
+small manual adapter and tool description. Supporting the Model Context Protocol (MCP) would allow
+the agent to discover and call a broader ecosystem of existing tools and services. The current
+service model can be exposed through MCP with additional authentication, capability filtering, and
+auditing.
+
+### 6.3 Background memory and retrieval
+
+The current session design is voice-plus-text-oriented: history is stored and replayed as a
+conversation context. In a native voice application, users should not have to manage session
+history explicitly; memory should be created, summarised, retrieved, updated, and forgotten in the
+background. Future work includes long-term memory extraction, semantic or hybrid retrieval,
+user-profile management, privacy controls, and context assembly that hides the machinery from the
+user.
+
+### 6.4 Cloud deployment and concurrency
+
+The current implementation is designed for local, effectively single-user use. A cloud service with
+high traffic would need substantially more infrastructure:
+
+- multiple distributed worker processes and autoscaling for LiveKit Agents;
+- a shared session/state store such as PostgreSQL instead of local SQLite;
+- a fast coordination/cache layer for leases, active-room routing, and rate limits;
+- object storage for long transcripts, recordings, traces, and large artifacts;
+- multi-tenant authentication, authorisation, quotas, and data-isolation controls;
+- provider rate-limit handling, retries, fallback providers, and observability at fleet scale;
+- highly available LiveKit and media network design rather than a local development server;
+- secret management, audit, privacy/compliance controls, and CI/CD;
+- load and soak testing for ASR/TTS concurrency rather than per-session correctness tests alone.
+
+---
+
+## 7. Configuration and startup
+
+### 7.1 Requirements
+
+| Component | Requirement |
+| --- | --- |
+| Python | Python 3.11 and `uv`; use `uv.lock` and `uv sync --locked --python 3.11`. |
+| Frontend | Node.js 24 and pnpm 10.13.1; use `frontend/pnpm-lock.yaml`. |
+| LiveKit | A local `livekit-server` binary or the Docker Compose service. The local config uses `devkey` / `secret`. |
+| Provider credentials | `DEEPSEEK_API_KEY` for the LLM and `SONIOX_API_KEY` for ASR/TTS. Both are read from the process environment or `.env.local`; process environment variables take precedence. |
+| Browser | A modern browser with microphone permission for voice mode. PortAudio and local audio devices are not required for the browser or Docker paths. |
+| Docker | Docker Compose v2 for the container stack. On Windows, enable WSL integration for the project distribution. |
+
+### 7.2 Environment file
+
+Copy the placeholder example and fill in the provider credentials:
 
 ```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.asr.replay recordings/demo.wav --output logs/asr-demo.json
+cp .env.example .env.local
 ```
 
-The command uses the real Soniox WebSocket API and incurs provider charges. No frontend, microphone, LiveKit Server, LLM, or TTS is required. WAV, MP3, M4A, and other formats supported by the installed PyAV build are decoded locally, downmixed to mono PCM16, and resampled to the configured rate. An external `ffmpeg` executable is not required. Input is paced at its original duration with 20 ms frames rather than uploaded as a batch transcription job.
+The relevant variables are:
 
-The native Soniox plugin uses `stt-rt-v5` with Chinese and English hints. Hints are not strict language restrictions. Translation, language labels, and speaker diarization are disabled. Mixed-language text is preserved; the file input is explicitly assigned the `user` role. Interim and preflight text remain provisional, and finalization updates the same message ID. This ASR test performs no booking operations.
-
-Text events are printed immediately as JSON lines; the last JSON object is the summary. The report contains timestamped events, provisional revisions, final user messages, processing usage, and timings from replay start. Reusing `--output` atomically replaces the report. Omitting it writes a new run under `logs/asr-<session_id>.json`. Reports retain multilingual conversation text but no credentials or authentication payloads.
-
-The locked plugin does not terminate its remote session when `end_input()` is called. The replay utility therefore adds 3 seconds of paced silence, waits for processing usage to cover all sent audio and for provisional text to be finalized, then closes the stream. The tail is also sent to the API. The configurable drain deadline starts after the tail; an unfinalized result or missing processing acknowledgement times out and is recorded as a failure. A recording with no finalized speech also fails. This is a bounded file replay test, not a batch API or a server `finished` acknowledgement test.
-
-Press Ctrl+C to stop replay and close its resources; the report is marked cancelled. This checks component cancellation. The voice session separately handles interruptions and playback cancellation. Short recordings may produce only final text; use a longer recording to observe interim updates.
-
-```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.asr.replay --help
-uv run --locked pytest tests/test_asr_offline.py -q
+```dotenv
+DEEPSEEK_API_KEY=...
+SONIOX_API_KEY=...
+LIVEKIT_URL=ws://localhost:7880
+LIVEKIT_PUBLIC_URL=ws://localhost:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=secret
 ```
 
-The 18 ASR offline tests use the real native plugin with a simulated WebSocket. They cover PCM framing, WAV/MP3 decoding, resampling, mixed-language revisions, provisional preflight text, finalization, credential precedence, timeout, API errors, no-speech input, cancellation, report replacement, and resource cleanup. They make no network calls. The user subsequently reported that the manual ASR cases passed; combined live conversation still needs microphone validation. See the Chinese [ASR test guide](docs/ASR验证指南.md) for recording scenarios and report interpretation.
+`LIVEKIT_URL` is the server URL used by Python services. `LIVEKIT_PUBLIC_URL` is the URL sent to the
+browser. They can differ for remote or container deployments. Never put provider credentials or
+LiveKit API secrets in `NEXT_PUBLIC_*` variables or the frontend environment.
 
-## Streaming TTS with text input
+### 7.3 Configuration map
 
-TTS uses the same `SONIOX_API_KEY` environment variable or root `.env.local` credential as ASR. Run a paid synthesis test with inline text or a UTF-8 file:
+| File | Purpose |
+| --- | --- |
+| `config/backend.toml` | Booking database path, business timezone, fixed current user, seed interval layout. |
+| `config/booking_demo.json` | Reference users, resources, and initial occupancy. |
+| `config/booking_prompt.md` | Booking agent instructions and confirmation policy. |
+| `config/booking_agent.toml` | Read-query row, execution-step, and timeout limits. |
+| `config/llm.toml` | LLM base URL, model, credential variable, default non-thinking options, and optional reasoning profile. |
+| `config/asr.toml` | Soniox STT endpoint, model, language hints, sample rate, endpoint delay, and replay settings. |
+| `config/tts.toml` | Soniox TTS endpoint, model, voice, primary language, sample rate, and timing settings. |
+| `config/voice.toml` | LiveKit URL, agent name, VAD parameters, endpointing, and interruption duration. |
+| `config/sessions.toml` | Session/telemetry database paths, heartbeat/lease limits, context size, API host/port, token TTL, and tracing switch. |
+| `config/livekit-local.yaml` | Local LiveKit development server configuration for same-machine browser testing. |
+| `config/docker/` | Container-specific overrides for backend and session paths. |
 
-```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke --text "会议室 A 明天上午十点可用。Please confirm the date and time before booking." --output recordings/tts-demo.wav --report logs/tts-demo.json
-PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke --text-file recordings/tts-input.txt --language en --output recordings/tts-en.wav --report logs/tts-en.json
-```
+Relative database paths are resolved from the project root, independently of the process working
+directory.
 
-The native Soniox plugin uses the explicitly configured `tts-rt-v2` model, `Maya` voice, and primary language `zh`. Text is submitted incrementally with `push_text()`, buffered into sentences by the official plugin, and synthesized over WebSocket. PCM16 mono audio is consumed and written as it arrives, then published as a playable WAV. No frontend, LiveKit Server, LLM, external ffmpeg, or audio device is required. Open the completed WAV in your own player; this utility does not play audio in realtime.
+### 7.4 Start the full local stack
 
-`language` is the primary delivery language required by Soniox. It does not classify each utterance or remove foreign words. Mixed Chinese/English text is preserved. Override it with `--language en` or `--language zh`; the provider also supports native `update_options(language=...)` for subsequent streams on the same instance.
-
-The CLI prints first-audio, input-ended, and stream-completed events immediately, then a summary. The report records one assistant message with planned and submitted text, text/audio events, native request and segment IDs, elapsed timings, frame count, duration, and `audio_before_input_end`. Longer, multi-sentence input is recommended to observe audio arriving before all text is submitted. Short input may finish submitting before the first frame. No exact `spoken_text` is claimed.
-
-Without explicit paths, outputs use `recordings/tts-<session_id>.wav` and `logs/tts-<session_id>.json`. Successful output and reports replace their destination atomically. API errors, timeouts, and empty audio fail without replacing an existing successful WAV. Ctrl+C or `--cancel-after 2` cancels synthesis; already received audio is saved separately as `<output-stem>.partial.wav`, with a cancelled report and exit code 130. Component cancellation is covered; session tests also exercise interrupted synthesis and playback queue clearing.
-
-```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke --help
-uv run --locked pytest tests/test_tts_offline.py -q
-```
-
-All 18 TTS offline tests passed against the native plugin with a simulated WebSocket. The user subsequently reported that manual ASR and TTS tests passed. The complete conversation still needs live microphone validation; offline session checks are described below. See the Chinese [TTS test guide](docs/TTS验证指南.md) for text input, cancellation, and listening checks.
-
-## Realtime conversation without a frontend
-
-The native `BookingAgent` and `AgentSession` compose the existing streaming providers. Soniox endpointing controls completed user turns; local CPU Silero VAD detects speech and triggers interruptions. Native session handling cancels obsolete LLM/TTS output and clears playback. Preemptive generation and automatic false-interruption resume are disabled for this demo.
-
-Seed a future date before testing, then choose either entrypoint:
+Prepare the Python and frontend dependencies once:
 
 ```bash
 uv sync --locked --python 3.11
-PYTHONPATH=backend uv run --locked python -m opentalk admin init --start-date 2030-01-02
-
-# Headless text: requires only the configured LLM credential, on Linux/WSL.
-PYTHONPATH=backend uv run --locked python -m opentalk.voice.text
-
-# Local microphone and speaker: requires LLM/Soniox credentials and PortAudio.
-PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker console --list-devices
-PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker console
-```
-
-The text entrypoint uses the same native agent and tool execution, reads standard input, and exits on `/quit`, EOF, or Ctrl+C. It does not test ASR/TTS or acoustic interruptions. The microphone console is provided by the locked SDK and needs no browser or active room connection. Because this worker configures a server URL, the locked SDK initializes a LiveKitAPI client even in console mode; configure the local development API key/secret from `.env.example` to avoid the missing-credentials error. Its Python CLI is marked deprecated by LiveKit but remains available in the locked version; it does not require installing the separate `lk` CLI.
-
-Ask for all known rooms or available intervals across dates. To reserve, move, or cancel a reservation, describe the request and answer the assistant’s confirmation question naturally. The agent should ask again after changed details and should not interpret a refusal, question, or interrupted explanation as confirmation. Multilingual user input and generated LLM responses are preserved. `请用英语回复` / `please reply in English` and `请用中文回复` / `please reply in Chinese` set the explicit reply preference and subsequent TTS language.
-
-Public VAD settings are in `config/voice.toml`; persistence and lifecycle limits are in `config/sessions.toml`. Native `session.history` and typed `session.userdata` are checkpointed to `data/sessions.sqlite3`, independently of booking storage. Metrics, bounded diagnostics, and optional content-free OpenTelemetry traces are kept in `logs/telemetry.sqlite3`. Interim ASR revisions and full generated responses are no longer duplicated into session JSON snapshots. Text saves after each turn; all modes periodically checkpoint and save on close. Already started transactions retain their result even if speech is cancelled.
-
-For a LiveKit room worker, configure the server URL and backend credentials, then run:
-
-```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker dev
-# Use start instead of dev for worker operation without development reload.
-```
-
-The agent registers as `opentalk-booking`; a room client must explicitly dispatch that agent name. The local session API supplies tokens and named dispatch metadata for this worker; a browser and LiveKit Server deployment are still pending.
-
-Validation records and current test coverage are listed in the realtime conversation guide. Offline tests use the real native session and tool runner with scripted streaming provider doubles. They cover multiple SQL queries per turn, edits, language preference, audio input/output, interruption, stale tool calls, transaction completion after speech cancellation, atomic reports, scoped reasoning, and headless standard-input interaction. Silero also performs actual local inference on silence. Acoustic barge-in, provider timing, and microphone quality require manual testing. See the Chinese [realtime conversation guide](docs/实时语音验证指南.md).
-
-## Session management and resume
-
-Use the same text entrypoint, or select the business-free conversation agent:
-
-```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.voice.text
-PYTHONPATH=backend uv run --locked python -m opentalk.voice.text --agent conversation
-```
-
-No models are initialized until a conversation starts. `/session`, `/session list`, `/session show ID`, `/session history [ID]`, and `/session help` inspect local state without credentials or API charges. `/session end` finishes normally; `/session new` starts another conversation; `/session resume ID` restores a completed session with the same session ID and a new attempt ID. `/quit` and normal EOF also finish normally. Cancellation, provider/persistence failures, and expired worker leases cannot be resumed. A resumed agent receives bounded native history and language preference; stored tool calls are never replayed.
-
-The separate SQLite session service has no booking dependency. The booking adapter lives in `voice/factories.py`; the conversation adapter uses no booking database. Default context is limited to 120 items, diagnostics to 512 queued / 10000 stored events and 7 days, and each running attempt to one hour. Actual conversation history is retained once per native item ID and grows with actual conversation, independently of diagnostic retention.
-
-Start the local control API for the browser:
-
-```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.sessions.api
-```
-
-It listens on `127.0.0.1:8080` and provides session creation/resume, listing, paginated history, signed room tokens, and idempotent end requests. API and worker share the session database. `LIVEKIT_URL` is the internal server address; `LIVEKIT_PUBLIC_URL` overrides the browser-facing address. Web clients must request normal end and wait for the final checkpoint; unsolicited participant disconnects are conservatively failed.
-
-See the Chinese [session validation guide](docs/会话管理验证指南.md) for CLI acceptance steps, configuration, lifecycle semantics, API payloads, and official references. Existing `logs/voice` JSON artifacts are historical and are not automatically imported.
-
-## Browser demo
-
-The trimmed [LiveKit starter frontend](frontend/README.md) contains voice controls, agent waveform, transcript, and persisted session selection/resume. It has no booking-specific UI. Run these in separate terminals from the project root after configuring root `.env.local`:
-
-```bash
-livekit-server --config config/livekit-local.yaml
-PYTHONPATH=backend uv run --locked python -m opentalk.sessions.api
-PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker dev --no-reload --log-level info
-```
-
-Then start the frontend:
-
-```bash
 cd frontend
 pnpm install --frozen-lockfile
+cd ..
+```
+
+Initialise the reference business database with a future date range:
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk admin init
+```
+
+Then start the services in separate terminals from the project root:
+
+```bash
+# Terminal 1: LiveKit transport
+livekit-server --config config/livekit-local.yaml
+
+# Terminal 2: session control API and token issuance
+PYTHONPATH=backend uv run --locked python -m opentalk.sessions.api
+
+# Terminal 3: LiveKit agent worker
+PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker dev --no-reload --log-level info
+
+# Terminal 4: browser client
+cd frontend
 pnpm dev
 ```
 
-Open http://localhost:3000 and allow microphone access. Use Node.js 24 and pnpm 10.13.1. The frontend proxies the session API on the server; default `OPENTALK_API_URL` is `http://127.0.0.1:8080`. `OPENTALK_AGENT=conversation` selects the generic talkbot; default `booking` retains booking tools in the agent without adding business UI. Secrets stay in the Python backend.
+Open <http://localhost:3000> and allow microphone access. The service panel should report the session
+API, LiveKit server, worker, and provider configuration as available/configured. Default ports are
+LiveKit `7880`, RTC TCP `7881`, RTC UDP `7882`, session API `8080`, worker health `8081`, and frontend
+`3000`.
 
-The local LiveKit configuration advertises only `127.0.0.1` ICE candidates and enables loopback media binding. This is required for Windows browsers accessing WSL through localhost when the automatically selected LAN address is unreachable. It uses development credentials and is intended for browsers and workers on the same computer. Remote browsers need a separate reachable media-address configuration.
+For a production-style frontend build use `pnpm build && pnpm start` instead of `pnpm dev`.
 
-The Services panel checks session storage, authenticated LiveKit connectivity, worker HTTP health on port 8081, and provider configuration every 10 seconds. It does not make paid provider calls. Native messages checkpoint automatically when committed. New chat and history selection save and close the current connection internally; page close sends a best-effort normal-close request. Reopening loads the last selected history, and the next text or voice input resumes a completed session without a separate button. Unexpected failures remain read-only. Text mode disables backend audio input/output and skips TTS; canceling voice also stops active synthesis while continuing the original LLM text stream.
+### 7.5 Docker Compose
 
-See the Chinese [browser validation guide](docs/网页语音验证指南.md) for staged tests, independent test databases, actual browser integration results, configuration overrides, and physical microphone checks. Container startup and isolated tests are documented in [Docker validation](docs/Docker验证指南.md).
-
-## Docker demo
-
-Configure the root `.env.local` with provider credentials, then run from the project root:
+Configure `.env.local`, then run from the project root:
 
 ```bash
 docker compose up -d --build --wait
@@ -228,89 +711,91 @@ docker compose ps
 docker compose logs --tail 100 worker api
 ```
 
-Open http://localhost:3000. Docker Desktop users should enable WSL integration for the project distro. The Compose stack includes LiveKit 1.13.8, the independent SQLite session API, the agent worker, and the standalone Next.js frontend. A separate idempotent `booking-init` job initializes the demo data before the booking worker starts. Python 3.11.14, uv 0.9.21, Node.js 24.15.0 and pnpm 10.13.1 retain the existing application lockfiles.
-
-This configuration serves browsers on the same computer, including Windows browsers accessing WSL localhost. Signaling uses TCP 7880; media uses TCP 7881 and UDP 7882. LiveKit advertises both the container address for internal peers and loopback for local host browsers. Its media sockets bind the container network interface, so Docker can forward host traffic correctly. The API is internal, and the frontend alone proxies its requests. Local development LiveKit credentials are set consistently by Compose; provider credentials enter the API/worker at runtime and are excluded from image build contexts.
-
-Named volumes `booking-data`, `session-data` and `telemetry-data` keep separate SQLite stores. They are independent of host `data/` and `logs/`; local databases are not imported automatically. `docker compose down` preserves these volumes. Container logs rotate at 10 MB with three files per service. Frontend and Python application services run as UID 10001. `OPENTALK_AGENT=conversation docker compose up -d` selects the generic talkbot.
+Open <http://localhost:3000>. The stack includes LiveKit Server, the session API, the agent worker,
+the standalone Next.js frontend, and a one-shot booking initialiser. Business, session, and
+telemetry data use separate named volumes.
 
 ```bash
-# Inspect the container's business database without calling any provider.
-docker compose run --rm --no-deps booking-init python -m opentalk admin inspect
-docker compose run --rm --no-deps booking-init python -m opentalk admin check
-# Run the complete offline backend suite in a separate test image.
-docker compose --profile test run --build --rm --no-deps backend-tests
-# Stop the demo while preserving its data.
+# Stop the stack while preserving data.
 docker compose down
+
+# Run the backend offline test suite in isolation.
+docker compose --profile test run --build --rm --no-deps backend-tests
+
+# Switch to the generic conversation agent.
+OPENTALK_AGENT=conversation docker compose up -d --wait
 ```
 
-See the Chinese [Docker guide](docs/Docker验证指南.md) for staged verification, port overrides, database administration, persistence and WebRTC tests.
+See the Docker guide in `docs/` for port overrides, database administration, persistence, and
+media-path verification.
 
-## Booking database administration
+### 7.6 Text-only agent
 
-The business database now has five tables, independent of LiveKit or agent sessions:
-
-| Table | Purpose |
-| --- | --- |
-| `users(uid, name, department)` | User directory; the demo always acts as configured `demo_user_id`. |
-| `resources(rid, name, type, location, capacity, metadata)` | Resource directory, per-person concurrent capacity and JSON descriptions. |
-| `slots(sid, rid, starts_at, ends_at)` | Time intervals stored in canonical UTC. |
-| `slot_users(booking_id, sid, uid, operation_id, status, created_at, updated_at)` | User reservations; cancellation retains the row, and moving preserves `booking_id`. |
-| `operations(...)` | Durable requests, versions, successful snapshots and failed outcomes. |
-
-The `reservations` view joins user/resource descriptions. `slot_availability` reports peak occupancy and remaining capacity over each interval; it accounts for partial overlaps. Read queries may inspect everyone’s bookings, while edits only affect the configured current user. An individual booking consumes one capacity unit; metadata may describe physical seating separately. Slots are discoverable examples, not an opening-hours restriction, so an edit may create a different future interval on an existing resource.
-
-Run local administrator commands from the project root; they need no model credentials:
+The text console does not require LiveKit, ASR, TTS, a microphone, or PortAudio. It uses the same
+agent and tool lifecycle:
 
 ```bash
-# Initialize a seven-day period starting tomorrow in the business timezone.
-PYTHONPATH=backend uv run --locked python -m opentalk admin init
-# Or choose an explicit future period and optional JSON fixture.
-PYTHONPATH=backend uv run --locked python -m opentalk admin init --start-date 2030-01-02 --days 7
-PYTHONPATH=backend uv run --locked python -m opentalk admin inspect
-PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table users
-PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table resources
-PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table reservations --limit 200
-PYTHONPATH=backend uv run --locked python -m opentalk admin query "SELECT resource_name, uid, starts_at, ends_at FROM reservations WHERE status='active' ORDER BY starts_at"
-PYTHONPATH=backend uv run --locked python -m opentalk admin check
+PYTHONPATH=backend uv run --locked python -m opentalk.voice.text
+PYTHONPATH=backend uv run --locked python -m opentalk.voice.text --agent conversation
 ```
 
-`admin check` checks SQLite integrity, foreign keys, capacity and overlapping bookings of the same user/resource. `admin query` is read-only. These are trusted local administrator commands, not an authentication mechanism or agent tools. Add `--database /tmp/opentalk-case.sqlite3` before `admin` to inspect or initialize an isolated database; the text agent’s `--config` can point to a matching copied backend configuration.
+It supports session commands such as `/session`, `/session list`, `/session history`, `/session
+resume`, `/session end`, and `/quit`. A model credential is required once a normal message or a
+session resume starts the agent.
 
-On a fresh database, the default profile creates Alice (`demo-user`), Bob, Chen and Dina; Room A (capacity 1), Room B (2), Desk Zone (3) and Projector 1 (1). It initializes the configured 09:00, 10:00, 14:00 and 15:00 intervals each day with partial occupancy, including one reservation of Alice’s. A seven-day fixture contains 112 slots and 49 reservations/operations. Repeating initialization of the same period neither duplicates reservations nor resurrects cancelled ones; existing bookings are not replaced, and conflicting fixture entries are reported in `skipped`. Use a fresh database file for repeatable test baselines.
+### 7.7 Component smoke tests and tests
 
-The service accepts the resource-model schema. The previous booking tools, two-step CLI and schema migration entrypoint have been removed. Already migrated business records and operation outcomes remain readable; session history and telemetry use independent stores.
+All commands below run from the project root. The smoke tests call paid provider APIs; the offline
+test suite does not.
 
-See [Booking Service natural-language test cases](docs/BookingService自然语言测试用例.md) for normal, complex, ambiguous, unreasonable and multilingual scenarios, setup and state assertions.
+```bash
+# Streaming LLM smoke test.
+PYTHONPATH=backend uv run --locked python -m opentalk.llm.smoke
 
-## Environment inspection
+# Streaming ASR file replay; replace the WAV with your own recording.
+PYTHONPATH=backend uv run --locked python -m opentalk.asr.replay recordings/demo.wav \
+  --output logs/asr-demo.json
 
-Checked on October 6, 2026:
+# Streaming TTS smoke test.
+PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke \
+  --text "会议室 A 明天上午十点可用。Please confirm the date and time before booking." \
+  --output recordings/tts-demo.wav --report logs/tts-demo.json
 
-| Tool | Observed version or status |
-| --- | --- |
-| uv | 0.9.21 |
-| pnpm | 10.13.1; executable resolves under `/mnt/c/nvm4w/nodejs/` |
-| Node.js | v24.15.0 |
-| Python 3.11 | 3.11.14 at `/usr/bin/python3.11` |
-| Default `python3` | 3.10.12; project setup must explicitly select Python 3.11 |
-| Local LiveKit Server | User reports installation and manually starts `livekit-server --dev`; Cloud is not required |
-| Project dependencies | pytest, LiveKit Agents/OpenAI/Soniox/Silero plugins, PyAV, and dotenv installed with uv on October 7, 2026 |
-| Git metadata | Repository present during the October 7 implementation |
-| PortAudio system library | Not found during the October 7 inspection; required for local microphone console |
+# Offline backend suite.
+PYTHONPATH=backend uv run --locked pytest -q
 
-The default uv cache was not writable in the inspection sandbox. Setting `UV_CACHE_DIR=/tmp/opentalk-uv-cache` allowed installed Python discovery to complete. This is an inspection workaround, not a required project default.
+# Explicitly opt into the live LLM test.
+PYTHONPATH=backend uv run --locked pytest tests/test_llm_live.py --live-llm -q
+```
 
-The current restricted sandbox can also stall during `asyncio.run()` thread-pool shutdown, including a minimal `asyncio.to_thread()` example. The complete offline suite passed outside that sandbox; no application workaround was introduced. Real API tests require network access to the configured endpoint.
+### 7.8 Booking administration
 
-Booking tests run on Python 3.11. The configured DeepSeek credential and official endpoint have passed a real streaming smoke test and two real text-tool scenarios. Native Soniox plugin compatibility and file replay have passed offline tests. The user reported successful manual Soniox ASR/TTS tests. Local LiveKit connectivity and the browser media pipeline have passed real Soniox / DeepSeek tests using simulated browser microphone input. Physical microphone quality and acoustic echo remain manual checks.
+Administrator commands do not need model credentials and operate on the configured business
+database:
 
-## Development conventions
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk admin init
+PYTHONPATH=backend uv run --locked python -m opentalk admin inspect
+PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table reservations --limit 200
+PYTHONPATH=backend uv run --locked python -m opentalk admin check
+PYTHONPATH=backend uv run --locked python -m opentalk admin query "SELECT resource_name, starts_at, ends_at FROM reservations WHERE status='active' ORDER BY starts_at"
+```
 
-- Manage Python dependencies with uv and retain `uv.lock`.
-- Manage frontend dependencies with pnpm and retain `pnpm-lock.yaml`.
-- Do not upgrade dependencies by default.
-- Use English for code comments, UI labels, diagnostics, and errors. Preserve multilingual conversation content and transcripts.
-- Deduplicate messages and events using stable identifiers. Use explicit revisions when retaining multiple versions.
-- Keep business logic independent of voice frameworks and model SDKs.
-- Treat interruption, multilingual input, logging, and changes of intent as module acceptance criteria rather than deferred features.
+Use `--database /path/to/copy.sqlite3` or `--config /path/to/backend.toml` to work on an isolated
+database.
+
+### 7.9 More documentation
+
+The README is the high-level guide. The `docs/` directory contains detailed validation guides,
+including independent ASR, TTS, session, realtime voice, web, Docker, and booking test procedures.
+Some of those guides are written in Chinese. They remain useful for reproducing component-level
+checks and should be consulted when changing providers, database schema, or deployment topology.
+
+Useful starting points:
+
+- [Development and validation reference](docs/开发与验证参考.md) preserves component commands,
+  implementation constraints, environment troubleshooting, and data-isolation notes that were
+  previously kept in the README.
+- [Development plan](docs/开发计划.md) documents the staged architecture and acceptance criteria.
+- The per-component guides cover ASR, TTS, sessions, realtime voice, the browser client, Docker,
+  and booking natural-language test cases.

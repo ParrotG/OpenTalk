@@ -2,7 +2,7 @@
 
 ## 已实现范围
 
-`opentalk.tts.provider.create_tts()` 返回官方 `livekit.plugins.soniox.TTS` 实例，符合 LiveKit 原生 TTS 接口。使用已锁定的 1.8.5 插件，没有增加或升级依赖，没有添加上级 AgentSession、前端或 LLM → TTS 编排。
+`opentalk.tts.provider.create_tts()` 返回官方 `livekit.plugins.soniox.TTS` 实例，符合 LiveKit 原生 TTS 接口，使用锁定的 1.8.5 插件，现已接入项目的 AgentSession 和网页语音链路。本指南专门验证独立文本流合成，不启动上级 AgentSession、前端或 LLM；完整交互见 [网页语音验证指南](网页语音验证指南.md)。
 
 独立测试入口接受文本或 UTF-8 文本文件，按配置模拟 LLM 增量输出，调用 `stream.push_text()`，同时消费音频帧并写入 WAV。文本不是一次性传给 `synthesize()`，音频也不是通过 REST API 完整下载后处理。
 
