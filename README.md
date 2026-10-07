@@ -79,7 +79,7 @@ Live tests are skipped by default even when credentials exist. Current tests use
 
 The prompt asks the assistant to describe the exact change and obtain agreement in a later user turn before calling edit. Ordinary agreement is accepted; there are no fixed confirmation words, host-generated recaps, proposal-version grants, or separate confirmation tools. Confirmation is an LLM conversation policy, not a deterministic authorization guarantee. All local business data is queryable. There is no login flow; the configured fixed UID determines ownership. The backend independently rejects edits of another user’s bookings, including attempts to supply a different UID.
 
-Edits validate future intervals, known resources, caller ownership, own overlapping bookings and peak concurrent resource capacity. Each reservation consumes one capacity unit, and adjacent intervals do not conflict. A request key binds the user turn and native tool call; a retry returns the original outcome, and changed arguments with the same key are rejected. Business changes and operation outcomes commit together; failed moves preserve the original booking. Already started writes finish when speech is interrupted, and stale calls are rejected before execution. Legacy prepare/confirm commands use the same ownership and capacity rules; the old seven-tool interface is not exposed to the current agent.
+Edits validate future intervals, known resources, caller ownership, own overlapping bookings and peak concurrent resource capacity. Each reservation consumes one capacity unit, and adjacent intervals do not conflict. A request key binds the user turn and native tool call; a retry returns the original outcome, and changed arguments with the same key are rejected. Business changes and operation outcomes commit together; failed moves preserve the original booking. Already started writes finish when speech is interrupted, and stale calls are rejected before execution.
 
 The default profile disables thinking. `escalate_reasoning(task, message?)` delivers a brief acknowledgement and makes one isolated streaming analysis request with the configurable `[reasoning]` profile in `config/llm.toml`. The current profile uses the same model, thinking enabled, `reasoning_effort = "high"`, an 8192-token limit, and a 60-second timeout. It returns the answer content, not the reasoning trace, and the default agent continues with query/edit. It is limited to one escalation per user turn and never changes the shared/default provider settings.
 
@@ -142,7 +142,7 @@ Seed a future date before testing, then choose either entrypoint:
 
 ```bash
 uv sync --locked --python 3.11
-PYTHONPATH=backend uv run --locked python -m opentalk seed --date 2030-01-02
+PYTHONPATH=backend uv run --locked python -m opentalk admin init --start-date 2030-01-02
 
 # Headless text: requires only the configured LLM credential, on Linux/WSL.
 PYTHONPATH=backend uv run --locked python -m opentalk.voice.text
@@ -216,7 +216,35 @@ The local LiveKit configuration advertises only `127.0.0.1` ICE candidates and e
 
 The Services panel checks session storage, authenticated LiveKit connectivity, worker HTTP health on port 8081, and provider configuration every 10 seconds. It does not make paid provider calls. Native messages checkpoint automatically when committed. New chat and history selection save and close the current connection internally; page close sends a best-effort normal-close request. Reopening loads the last selected history, and the next text or voice input resumes a completed session without a separate button. Unexpected failures remain read-only. Text mode disables backend audio input/output and skips TTS; canceling voice also stops active synthesis while continuing the original LLM text stream.
 
-See the Chinese [browser validation guide](docs/网页语音验证指南.md) for staged tests, independent test databases, actual browser integration results, configuration overrides, and physical microphone checks. Docker is deferred to the next phase.
+See the Chinese [browser validation guide](docs/网页语音验证指南.md) for staged tests, independent test databases, actual browser integration results, configuration overrides, and physical microphone checks. Container startup and isolated tests are documented in [Docker validation](docs/Docker验证指南.md).
+
+## Docker demo
+
+Configure the root `.env.local` with provider credentials, then run from the project root:
+
+```bash
+docker compose up -d --build --wait
+docker compose ps
+docker compose logs --tail 100 worker api
+```
+
+Open http://localhost:3000. Docker Desktop users should enable WSL integration for the project distro. The Compose stack includes LiveKit 1.13.8, the independent SQLite session API, the agent worker, and the standalone Next.js frontend. A separate idempotent `booking-init` job initializes the demo data before the booking worker starts. Python 3.11.14, uv 0.9.21, Node.js 24.15.0 and pnpm 10.13.1 retain the existing application lockfiles.
+
+This configuration serves browsers on the same computer, including Windows browsers accessing WSL localhost. Signaling uses TCP 7880; media uses TCP 7881 and UDP 7882. LiveKit advertises both the container address for internal peers and loopback for local host browsers. Its media sockets bind the container network interface, so Docker can forward host traffic correctly. The API is internal, and the frontend alone proxies its requests. Local development LiveKit credentials are set consistently by Compose; provider credentials enter the API/worker at runtime and are excluded from image build contexts.
+
+Named volumes `booking-data`, `session-data` and `telemetry-data` keep separate SQLite stores. They are independent of host `data/` and `logs/`; local databases are not imported automatically. `docker compose down` preserves these volumes. Container logs rotate at 10 MB with three files per service. Frontend and Python application services run as UID 10001. `OPENTALK_AGENT=conversation docker compose up -d` selects the generic talkbot.
+
+```bash
+# Inspect the container's business database without calling any provider.
+docker compose run --rm --no-deps booking-init python -m opentalk admin inspect
+docker compose run --rm --no-deps booking-init python -m opentalk admin check
+# Run the complete offline backend suite in a separate test image.
+docker compose --profile test run --build --rm --no-deps backend-tests
+# Stop the demo while preserving its data.
+docker compose down
+```
+
+See the Chinese [Docker guide](docs/Docker验证指南.md) for staged verification, port overrides, database administration, persistence and WebRTC tests.
 
 ## Booking database administration
 
@@ -245,50 +273,15 @@ PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table reso
 PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table reservations --limit 200
 PYTHONPATH=backend uv run --locked python -m opentalk admin query "SELECT resource_name, uid, starts_at, ends_at FROM reservations WHERE status='active' ORDER BY starts_at"
 PYTHONPATH=backend uv run --locked python -m opentalk admin check
-# The initializer and all normal entrypoints also migrate an older database.
-PYTHONPATH=backend uv run --locked python -m opentalk admin migrate
 ```
 
 `admin check` checks SQLite integrity, foreign keys, capacity and overlapping bookings of the same user/resource. `admin query` is read-only. These are trusted local administrator commands, not an authentication mechanism or agent tools. Add `--database /tmp/opentalk-case.sqlite3` before `admin` to inspect or initialize an isolated database; the text agent’s `--config` can point to a matching copied backend configuration.
 
 On a fresh database, the default profile creates Alice (`demo-user`), Bob, Chen and Dina; Room A (capacity 1), Room B (2), Desk Zone (3) and Projector 1 (1). It initializes the configured 09:00, 10:00, 14:00 and 15:00 intervals each day with partial occupancy, including one reservation of Alice’s. A seven-day fixture contains 112 slots and 49 reservations/operations. Repeating initialization of the same period neither duplicates reservations nor resurrects cancelled ones; existing bookings are not replaced, and conflicting fixture entries are reported in `skipped`. Use a fresh database file for repeatable test baselines.
 
-Old databases migrate transactionally on first use. A consistent `DATABASE.pre-resources-v1.bak` backup is kept first; bookings, IDs and business operation outcomes are preserved, while `events` and the operation `session_id` column are removed. Backup files retain the historical schema and are not used by the running service. Stop the old booking worker before explicitly migrating/initializing its database, then restart it so tools and schema use the same version. Existing session history and telemetry databases are untouched.
+The service accepts the resource-model schema. The previous booking tools, two-step CLI and schema migration entrypoint have been removed. Already migrated business records and operation outcomes remain readable; session history and telemetry use independent stores.
 
 See [Booking Service natural-language test cases](docs/BookingService自然语言测试用例.md) for normal, complex, ambiguous, unreasonable and multilingual scenarios, setup and state assertions.
-
-## Legacy booking CLI
-
-This CLI retains the original prepare/confirm workflow for existing backend tests and manual inspection; it is not the current agent tool interface. Run these commands from the project root:
-
-```bash
-uv sync --locked --python 3.11
-uv run --locked pytest -q
-PYTHONPATH=backend uv run --locked python -m opentalk --database /tmp/opentalk-demo.sqlite3 smoke
-```
-
-The smoke command creates a future slot in a dedicated room, prepares and confirms a booking, retries confirmation, and cancels the booking. It performs real writes and retains the operation audit. Repeated smoke runs create distinct completed operations and reuse the slot.
-
-To exercise individual steps, replace the date with a future date:
-
-```bash
-PYTHONPATH=backend uv run --locked python -m opentalk seed --date 2030-01-02
-PYTHONPATH=backend uv run --locked python -m opentalk available --date 2030-01-02
-PYTHONPATH=backend uv run --locked python -m opentalk prepare SLOT_ID --operation-id proposal-1
-PYTHONPATH=backend uv run --locked python -m opentalk confirm proposal-1 --version 1
-PYTHONPATH=backend uv run --locked python -m opentalk booking BOOKING_ID
-PYTHONPATH=backend uv run --locked python -m opentalk cancel BOOKING_ID --operation-id cancel-1
-PYTHONPATH=backend uv run --locked python -m opentalk operation proposal-1
-PYTHONPATH=backend uv run --locked python -m opentalk operations
-```
-
-Replace `SLOT_ID` and `BOOKING_ID` with IDs returned by earlier commands. CLI output is JSON; business errors have a stable `error` code and an English message. Global `--config` and `--database` options precede the command. The old `--session` flag is accepted for compatibility but has no business authorization or persistence effect.
-
-Preparing a proposal does not reserve a slot. To change an unconfirmed proposal, prepare another slot with a new operation ID and `--supersedes proposal-1`; the returned version must be used for confirmation. `invalidate OPERATION_ID` discards a pending proposal.
-
-Reuse the operation ID and unchanged arguments when retrying. Query `operation OPERATION_ID` after a lost response. Successful operations retain their original result snapshot, even if the booking is subsequently cancelled; use `booking BOOKING_ID` for its current state. Cancellation is an explicit CLI write command. The current conversation agent instead uses edit after natural-language confirmation.
-
-The service writes business state and operations in one transaction. Confirmation conflicts and expiry persist a failed operation. A caller with an unknown response can recover the committed outcome by operation ID. Slots are half-open time intervals and may overlap; capacity is checked across all active reservations at every change point. The business database contains no agent events, session IDs, transcripts or metrics. Session history and provider diagnostics remain in their independent stores.
 
 ## Environment inspection
 

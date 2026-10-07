@@ -1,0 +1,13 @@
+# Run with a separate project name and ports. Providers are replaced only in this fixture worker.
+services:
+  api:
+    environment:
+      DEEPSEEK_API_KEY: offline-test-key
+      SONIOX_API_KEY: offline-test-key
+  worker:
+    command: ["python", "tests/docker_worker.py", "start", "--log-level", "info", "--drain-timeout", "15"]
+    environment:
+      DEEPSEEK_API_KEY: offline-test-key
+      SONIOX_API_KEY: offline-test-key
+    volumes:
+      - ./tests:/app/tests:ro

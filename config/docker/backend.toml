@@ -1,5 +1,5 @@
 [booking]
-database_path = "data/opentalk.sqlite3"
+database_path = "data/booking/opentalk.sqlite3"
 timezone = "Asia/Singapore"
 demo_user_id = "demo-user"
 slot_start_hours = [9, 10, 14, 15]

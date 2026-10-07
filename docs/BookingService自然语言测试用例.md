@@ -29,7 +29,7 @@
 
 ## 准备与入口
 
-直接验收当前网页：先停掉旧 booking worker，运行以下命令迁移并初始化默认业务库，再按网页指南重启 worker：
+直接验收当前网页：先停掉旧 booking worker，运行以下命令初始化默认业务库，再按网页指南重启 worker：
 
 ```bash
 PYTHONPATH=backend uv run --locked python -m opentalk admin init
@@ -38,7 +38,7 @@ PYTHONPATH=backend uv run --locked python -m opentalk admin inspect --table rese
 PYTHONPATH=backend uv run --locked python -m opentalk admin check
 ```
 
-后端首次打开旧库会在事务中迁移，事先备份为 `data/opentalk.sqlite3.pre-resources-v1.bak`。保留原预约 ID、时段和 operations，删除旧 `events` 与 `operations.session_id`。旧库中的额外资源／预约会保留，所以精确的数量断言应使用全新测试库。
+当前仅接受新版用户／资源模型的数据库。已有业务记录会保留；精确的数量断言应使用全新测试库。
 
 推荐通过原有文本命令独立测试，避免改动默认库。下面在根目录生成独立配置；每组测试更换目录名即可获得新的基线：
 
@@ -151,12 +151,12 @@ PYTHONPATH=backend uv run --locked python -m opentalk --config /tmp/opentalk-boo
 修改后检查 `reservations`（原记录状态、owner、资源／区间）、`operations`（成功或失败、重试是否重复）及 `admin check`。查询／提议／拒绝阶段不得新增预约；被后端拒绝的合法写请求可以留下一条 failed 业务 operation，不能误判为已预约。
 
 ```bash
-PYTHONPATH=backend uv run --locked pytest tests/test_resource_booking.py tests/test_database_tools.py tests/test_backend_cli.py tests/test_booking_smoke.py tests/test_voice_session.py -q
+PYTHONPATH=backend uv run --locked pytest tests/test_resource_booking.py tests/test_database_tools.py tests/test_backend_cli.py tests/test_voice_session.py -q
 PYTHONPATH=backend uv run --locked pytest -q
 # 显式调用付费 LLM 的基础确认／改约／取消测试：
 PYTHONPATH=backend uv run --locked pytest tests/test_llm_live.py --live-llm -q
 ```
 
-离线测试覆盖真实 SQLite 事务、并发容量竞争、所有权检查、半开区间、峰值占用、改约失败回滚、幂等与失败重试、重复初始化／取消不复活、旧库备份与迁移回滚，以及原生 Agent 多次 edit 调用与伪造 UID 拒绝。自然语言理解、不同语言的表达和确认策略需要人工或显式付费模型验收；不能仅凭离线模型桩宣称全部自然语言用例通过。
+离线测试覆盖真实 SQLite 事务、并发容量竞争、所有权检查、半开区间、峰值占用、改约失败回滚、幂等与失败重试、重复初始化／取消不复活、不支持的 schema 拒绝且不改写数据，以及原生 Agent 多次 edit 调用与伪造 UID 拒绝。自然语言理解、不同语言的表达和确认策略需要人工或显式付费模型验收；不能仅凭离线模型桩宣称全部自然语言用例通过。
 
-本次重构验证记录：全量离线 `118 passed, 4 skipped`，未调用付费模型。默认业务库已备份并迁移，原有 2 条预约和 2 条 operation 的 ID／状态／结果完整保留；新增从 2026-10-08 起七天的 49 条示例预约。当前库合计 4 users、4 resources、120 slots、51 slot_users、51 operations，`admin check` 通过。多出的 8 个旧时段和 2 条旧预约属于保留数据，不能与新库基线混淆。重启现有 booking worker 后再按上述自然语言用例验收。
+旧接口清理后全量离线回归：`109 passed, 4 skipped`，未调用付费模型。已有新版库和业务审计记录保留，独立测试均使用临时库。

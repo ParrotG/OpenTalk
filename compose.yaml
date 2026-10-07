@@ -1,0 +1,142 @@
+name: opentalk
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-backend: &backend
+  image: opentalk-backend:local
+  build:
+    context: .
+    target: runtime
+  init: true
+  logging: *logging
+
+x-environment: &environment
+  LIVEKIT_API_KEY: devkey
+  LIVEKIT_API_SECRET: secret
+  OPENTALK_SESSION_CONFIG: /app/config/docker/sessions.toml
+
+services:
+  livekit:
+    image: livekit/livekit-server:v1.13.8
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      # Bind all container interfaces, but advertise host loopback to local browsers.
+      LIVEKIT_CONFIG: |
+        development: true
+        port: ${OPENTALK_LIVEKIT_PORT:-7880}
+        bind_addresses: [0.0.0.0]
+        logging:
+          level: info
+        rtc:
+          node_ip: 127.0.0.1
+          use_external_ip: false
+          # Keep the container interface for internal peers; NAT rewrites its address for the host.
+          advertise_internal_ip: true
+          tcp_port: ${OPENTALK_RTC_TCP_PORT:-7881}
+          udp_port: ${OPENTALK_RTC_UDP_PORT:-7882}
+    ports:
+      - "127.0.0.1:${OPENTALK_LIVEKIT_PORT:-7880}:${OPENTALK_LIVEKIT_PORT:-7880}/tcp"
+      - "127.0.0.1:${OPENTALK_RTC_TCP_PORT:-7881}:${OPENTALK_RTC_TCP_PORT:-7881}/tcp"
+      - "127.0.0.1:${OPENTALK_RTC_UDP_PORT:-7882}:${OPENTALK_RTC_UDP_PORT:-7882}/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${OPENTALK_LIVEKIT_PORT:-7880}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  booking-init:
+    <<: *backend
+    command: ["python", "-m", "opentalk", "admin", "init"]
+    volumes:
+      - booking-data:/app/data/booking
+      - ./config/docker/backend.toml:/app/config/backend.toml:ro
+
+  api:
+    <<: *backend
+    restart: unless-stopped
+    command: ["python", "-m", "opentalk.sessions.api"]
+    env_file: ["${OPENTALK_ENV_FILE:-.env.local}"]
+    environment:
+      <<: *environment
+      LIVEKIT_URL: ws://livekit:${OPENTALK_LIVEKIT_PORT:-7880}
+      LIVEKIT_PUBLIC_URL: ws://localhost:${OPENTALK_LIVEKIT_PORT:-7880}
+      OPENTALK_WORKER_HEALTH_URL: http://worker:8081
+    volumes:
+      - session-data:/app/data/sessions
+    depends_on:
+      livekit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
+  worker:
+    <<: *backend
+    restart: unless-stopped
+    env_file: ["${OPENTALK_ENV_FILE:-.env.local}"]
+    environment:
+      <<: *environment
+      LIVEKIT_URL: ws://livekit:${OPENTALK_LIVEKIT_PORT:-7880}
+      OPENTALK_WORKER_HEALTH_HOST: 0.0.0.0
+      OPENTALK_WORKER_IDLE_PROCESSES: "1"
+    volumes:
+      - booking-data:/app/data/booking
+      - session-data:/app/data/sessions
+      - telemetry-data:/app/logs
+      - ./config/docker/backend.toml:/app/config/backend.toml:ro
+    depends_on:
+      livekit:
+        condition: service_healthy
+        restart: true
+      booking-init:
+        condition: service_completed_successfully
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      start_period: 30s
+      retries: 12
+
+  frontend:
+    image: opentalk-frontend:local
+    build: ./frontend
+    init: true
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      OPENTALK_API_URL: http://api:8080
+      OPENTALK_AGENT: ${OPENTALK_AGENT:-booking}
+    ports:
+      - "127.0.0.1:${OPENTALK_FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
+  backend-tests:
+    profiles: [test]
+    image: opentalk-backend-test:local
+    build:
+      context: .
+      target: test
+    init: true
+    logging: *logging
+
+volumes:
+  booking-data:
+  session-data:
+  telemetry-data:

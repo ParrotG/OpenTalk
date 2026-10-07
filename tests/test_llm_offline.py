@@ -1,23 +1,21 @@
-"""Offline checks for configuration, the streaming protocol, and write authorization."""
+"""Offline checks for configuration and the native streaming tool protocol."""
 
 import asyncio
 import json
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 from livekit.agents import llm
-from livekit.agents.llm import ToolContext
-from livekit.agents.llm.utils import execute_function_call
 from livekit.plugins import openai as livekit_openai
 from openai import AsyncOpenAI
 
 from opentalk.domain.booking_service import BookingService
 from opentalk.llm import provider
 from opentalk.storage.repository import BookingRepository
-from opentalk.tools.booking_tools import BookingTools
-from text_harness import TextHarness
+from opentalk.voice.factories import agent_factory
+from opentalk.voice.session import open_session
 
 
 def service_and_slot(tmp_path):
@@ -66,50 +64,9 @@ def test_llm_config_rejects_protocol_override(tmp_path):
         provider.load_llm_config(path)
 
 
-def test_tool_grants_validation_replacement_and_retry(tmp_path):
-    async def scenario():
-        service, slot = service_and_slot(tmp_path)
-        tools = BookingTools(service)
-        context = ToolContext(tools.get_tools())
-        assert len(context.function_tools) == 7
-        invalid = await execute_function_call(
-            llm.FunctionToolCall(call_id="invalid", name="list_available_slots", arguments="{}"),
-            context,
-        )
-        assert invalid.fnc_call_out.is_error
-        unknown = await execute_function_call(
-            llm.FunctionToolCall(call_id="unknown", name="execute_sql", arguments="{}"), context,
-        )
-        assert unknown.fnc_call_out.is_error
-        proposal = (await tools.prepare_booking(slot.slot_id))["data"]
-        assert (await tools.prepare_booking(slot.slot_id))["data"] == proposal
-        denied = await tools.confirm_booking(proposal["operation_id"], proposal["version"])
-        assert denied["error"] == "confirmation_required"
-        assert len(service.list_available_slots(date(2030, 1, 2))) == 1
-
-        tools.authorize_confirmation(proposal["operation_id"], proposal["version"])
-        second = service.seed_slot("Room A", datetime(2030, 1, 2, 2, tzinfo=UTC),
-                                   datetime(2030, 1, 2, 3, tzinfo=UTC))
-        replacement = (await tools.prepare_booking(second.slot_id))["data"]
-        assert replacement["version"] == 2
-        assert (await tools.confirm_booking(proposal["operation_id"], 1))["ok"] is False
-        tools.authorize_confirmation(replacement["operation_id"], 2)
-        booking = await tools.confirm_booking(replacement["operation_id"], 2)
-        assert await tools.confirm_booking(replacement["operation_id"], 2) == booking
-        booking_id = booking["data"]["booking_id"]
-        assert (await tools.cancel_booking(booking_id))["error"] == "cancellation_required"
-        tools.authorize_cancellation(booking_id)
-        cancelled = await tools.cancel_booking(booking_id)
-        assert await tools.cancel_booking(booking_id) == cancelled
-        assert service.get_booking(booking_id).status == "cancelled"
-        assert len(service.list_operations()) == 3
-    asyncio.run(scenario())
-
-
 def test_fragmented_tool_stream_and_role_transcript(tmp_path):
     async def scenario():
         service, slot = service_and_slot(tmp_path)
-        tools = BookingTools(service)
         config = provider.load_llm_config()
         requests = []
 
@@ -127,8 +84,8 @@ def test_fragmented_tool_stream_and_role_transcript(tmp_path):
                 assert body["tools"]
                 events = [
                     chunk({"tool_calls": [{"index": 0, "id": "call-slots", "type": "function",
-                                          "function": {"name": "list_available_slots", "arguments": '{"day":'}}]}),
-                    chunk({"tool_calls": [{"index": 0, "function": {"arguments": '"2030-01-02"}'}}]}),
+                                          "function": {"name": "query", "arguments": '{"sql":'}}]}),
+                    chunk({"tool_calls": [{"index": 0, "function": {"arguments": '"SELECT name FROM resources"}'}}]}),
                     chunk({}, "tool_calls"),
                 ]
             else:
@@ -144,19 +101,21 @@ def test_fragmented_tool_stream_and_role_transcript(tmp_path):
         async with AsyncOpenAI(api_key="offline-test-key", base_url="https://offline.invalid",
                                http_client=httpx.AsyncClient(transport=httpx.MockTransport(transport))) as client:
             async with livekit_openai.LLM(model=config.model, client=client) as model:
-                driver = TextHarness(model, config, tools)
-                assert await driver.turn("Find slots on 2030-01-02.") == "One slot is available."
-                assert len(driver.calls) == 1
-                assert driver.calls[0]["name"] == "list_available_slots"
-                assert json.loads(driver.calls[0]["arguments"])["day"] == "2030-01-02"
-                report = tmp_path / "report.json"
-                driver.save(report)
-                driver.save(report)
-                data = json.loads(report.read_text(encoding="utf-8"))
-                assert len(data["tool_calls"]) == 1
-                roles = [item["role"] for item in data["transcript"]["items"] if item["type"] == "message"]
-                assert roles == ["system", "user", "assistant"]
-                assert "offline-test-key" not in report.read_text(encoding="utf-8")
+                async with open_session(text_only=True, factory=agent_factory(service=service),
+                                        model=model) as (session, agent, journal):
+                    await session.start(agent=agent)
+                    await session.run(user_input="Find slots on 2030-01-02.")
+                    assert session.history.items[-1].text_content == "One slot is available."
+                    await journal.save()
+                    await journal.save()
+                    history = journal.store.history(session.userdata.session_id)["items"]
+                    calls = [item for item in history if item["type"] == "function_call"]
+                    assert len(calls) == 1 and calls[0]["name"] == "query"
+                    assert json.loads(calls[0]["arguments"]) == {"sql": "SELECT name FROM resources"}
+                    roles = [item["role"] for item in history if item["type"] == "message"]
+                    assert roles == ["user", "assistant"]
+                    assert "offline-test-key" not in json.dumps(history)
+                assert len(requests) == 2
     asyncio.run(scenario())
 
 

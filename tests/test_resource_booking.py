@@ -1,12 +1,10 @@
-"""Exercise ownership, interval capacity, retries and migrations using real SQLite."""
+"""Exercise ownership, interval capacity, retries and schema validation using real SQLite."""
 
 import asyncio
-import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 
 import pytest
 
@@ -157,48 +155,13 @@ def test_demo_initialization_is_repeatable_and_cancellation_is_not_resurrected(t
     assert check(repository)["ok"]
 
 
-def legacy_database(path, *, invalid=False):
+def test_unsupported_schema_is_rejected_without_changing_existing_data(tmp_path):
+    path = tmp_path / "unsupported.sqlite3"
     with sqlite3.connect(path) as connection:
-        connection.executescript(Path(__file__).with_name("fixtures").joinpath("booking_v1.sql").read_text())
-        start, end = "2030-01-02T01:00:00.000000+00:00", "2030-01-02T02:00:00.000000+00:00"
-        connection.execute("INSERT INTO slots VALUES ('slot-old', 'Room A', ?, ?)", (start, end))
-        snapshot = {"booking_id": "booking-old", "user_id": "demo-user", "slot_id": "slot-old", "status": "active", "created_at": NOW.isoformat()}
-        connection.execute("""INSERT INTO operations VALUES ('operation-old', 'demo-user', 'agent-session-old',
-            'book', 'slot-old', 1, NULL, 'succeeded', ?, NULL, ?, ?)""",
-            (json.dumps(snapshot), NOW.isoformat(), NOW.isoformat()))
-        connection.execute("INSERT INTO bookings VALUES ('booking-old', 'demo-user', 'slot-old', 'operation-old', 'active', ?)", (NOW.isoformat(),))
-        connection.execute("INSERT INTO events VALUES ('agent-log', 'operation-old', 'agent-session-old', 'prepared', '{}', ?)", (NOW.isoformat(),))
-    if invalid:
-        with sqlite3.connect(path) as connection:
-            connection.execute("UPDATE bookings SET slot_id='missing'")
-    return snapshot
-
-
-def test_legacy_migration_preserves_bookings_and_operations_but_removes_agent_records(tmp_path):
-    path = tmp_path / "old.sqlite3"
-    snapshot = legacy_database(path)
-    repository = BookingRepository(path)
-    service = BookingService(repository, clock=lambda: NOW)
-    assert asdict(service.get_booking("booking-old")) == snapshot
-    assert asdict(service.get_operation("operation-old").result) == snapshot
-    assert service.confirm_booking("operation-old", 1) == service.get_booking("booking-old")
-    info = inspect(repository)
-    assert {table["name"] for table in info["tables"]} == {"users", "resources", "slots", "slot_users", "operations"}
-    assert all("session_id" not in table["sql"] for table in info["tables"])
-    backup = path.with_name(path.name + ".pre-resources-v1.bak")
-    with sqlite3.connect(backup) as connection:
-        assert connection.execute("SELECT count(*) FROM events").fetchone()[0] == 1
-    BookingRepository(path)
-    assert inspect(repository)["counts"] == info["counts"]
-    assert check(repository)["ok"]
-
-
-def test_invalid_legacy_migration_rolls_back_schema_and_data(tmp_path):
-    path = tmp_path / "invalid.sqlite3"
-    legacy_database(path, invalid=True)
-    with pytest.raises(ValueError, match="foreign keys"):
+        connection.execute("CREATE TABLE slots (slot_id TEXT, room TEXT)")
+        connection.execute("INSERT INTO slots VALUES ('preserved', 'Room A')")
+    with pytest.raises(ValueError, match="Unsupported booking database schema"):
         BookingRepository(path)
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT slot_id FROM bookings").fetchone()[0] == "missing"
-        assert connection.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+        assert connection.execute("SELECT * FROM slots").fetchall() == [("preserved", "Room A")]
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 0

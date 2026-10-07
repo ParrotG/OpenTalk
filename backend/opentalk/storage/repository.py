@@ -1,4 +1,4 @@
-"""SQLite business storage, atomic migrations, and serialized reservation writes."""
+"""SQLite business storage and serialized reservation writes."""
 
 import json
 import sqlite3
@@ -30,25 +30,12 @@ class BookingRepository:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as connection:
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(slots)")}
-            legacy = "room" in columns
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version > 2:
-                raise ValueError("The booking database uses a newer, unsupported schema.")
-            if legacy:
-                # Keep a consistent pre-migration copy, including committed WAL data.
-                backup_path = self.database_path.with_name(self.database_path.name + ".pre-resources-v1.bak")
-                if not backup_path.exists():
-                    with sqlite3.connect(backup_path) as backup:
-                        connection.backup(backup)
-                connection.execute("PRAGMA foreign_keys = OFF")
+            if version > 2 or (columns and "rid" not in columns):
+                raise ValueError("Unsupported booking database schema. Use a resource-model database or initialize a new file.")
             connection.execute("BEGIN IMMEDIATE")
             try:
-                # Another constructor may already have completed the migration.
-                columns = {row["name"] for row in connection.execute("PRAGMA table_info(slots)")}
-                if "room" in columns:
-                    self._migrate(connection)
-                else:
-                    apply_schema(connection)
+                apply_schema(connection)
                 if connection.execute("PRAGMA foreign_key_check").fetchall():
                     raise ValueError("The booking database contains invalid foreign keys.")
                 connection.execute("PRAGMA user_version = 2")
@@ -56,37 +43,6 @@ class BookingRepository:
             except BaseException:
                 connection.rollback()
                 raise
-
-    def _migrate(self, connection):
-        slots = [dict(row) for row in connection.execute("SELECT * FROM slots")]
-        bookings = [dict(row) for row in connection.execute("SELECT * FROM bookings")]
-        operations = [dict(row) for row in connection.execute("SELECT * FROM operations ORDER BY rowid")]
-        for table in ("events", "bookings", "operations", "slots"):
-            connection.execute(f"DROP TABLE IF EXISTS {table}")
-        apply_schema(connection)
-        for uid in sorted({row["user_id"] for row in operations + bookings}):
-            self.insert_user(connection, User(uid, uid, "Unspecified"))
-        for name in sorted({row["room"] for row in slots}):
-            self.insert_resource(connection, Resource(stable_id("resource", name), name,
-                                 "meeting_room", "Unspecified", 1))
-        for row in slots:
-            self.insert_slot(connection, Slot(row["slot_id"], row["room"], row["starts_at"],
-                             row["ends_at"], stable_id("resource", row["room"])))
-        # Insert self-references after all operations exist, regardless of legacy row order.
-        for row in operations:
-            connection.execute(
-                """INSERT INTO operations (operation_id, uid, kind, target_id, version,
-                status, result_json, error_code, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                tuple(row[key] for key in ("operation_id", "user_id", "kind", "target_id", "version",
-                      "status", "result_json", "error_code", "created_at", "updated_at")))
-        for row in operations:
-            connection.execute("UPDATE operations SET supersedes=? WHERE operation_id=?",
-                               (row["supersedes"], row["operation_id"]))
-        for row in bookings:
-            self.insert_booking(connection, Booking(**{key: row[key] for key in
-                                ("booking_id", "user_id", "slot_id", "status", "created_at")}),
-                                row["operation_id"])
 
     @contextmanager
     def connection(self):
@@ -146,12 +102,6 @@ class BookingRepository:
     def insert_slot(self, connection, slot):
         connection.execute("INSERT INTO slots VALUES (?, ?, ?, ?)",
                            (slot.slot_id, slot.resource_id, slot.starts_at, slot.ends_at))
-
-    def slots(self, connection):
-        rows = connection.execute("""SELECT s.sid AS slot_id, r.name AS room, s.starts_at,
-            s.ends_at, s.rid AS resource_id FROM slots s JOIN resources r USING(rid)
-            ORDER BY s.starts_at, r.name""").fetchall()
-        return [Slot(**dict(row)) for row in rows]
 
     def insert_operation(self, connection, operation, now):
         connection.execute("""INSERT INTO operations

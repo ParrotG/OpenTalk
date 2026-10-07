@@ -20,7 +20,9 @@ load_dotenv(PROJECT_ROOT / ".env.local", override=False)
 configuration = load_voice_config()
 server = AgentServer(ws_url=os.environ.get("LIVEKIT_URL", configuration.livekit_url),
                      host=os.environ.get("OPENTALK_WORKER_HEALTH_HOST", "127.0.0.1"),
-                     port=int(os.environ.get("OPENTALK_WORKER_HEALTH_PORT", "8081")))
+                     port=int(os.environ.get("OPENTALK_WORKER_HEALTH_PORT", "8081")),
+                     **({"num_idle_processes": int(os.environ["OPENTALK_WORKER_IDLE_PROCESSES"])}
+                        if "OPENTALK_WORKER_IDLE_PROCESSES" in os.environ else {}))
 
 
 def prewarm(process: JobProcess):

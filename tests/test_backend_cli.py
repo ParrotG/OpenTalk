@@ -10,21 +10,6 @@ import pytest
 from opentalk.config import PROJECT_ROOT, load_config
 
 
-def test_cli_smoke_twice(tmp_path):
-    command = [sys.executable, "-m", "opentalk", "--database",
-               str(tmp_path / "cli.sqlite3"), "smoke"]
-    environment = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "backend")}
-    results = []
-    for _ in range(2):
-        process = subprocess.run(command, env=environment, cwd=tmp_path,
-                                 capture_output=True, text=True, check=True)
-        result = json.loads(process.stdout)
-        assert result["status"] == "passed"
-        assert result["cancellation"]["status"] == "cancelled"
-        results.append(result)
-    assert results[0]["booking"]["booking_id"] != results[1]["booking"]["booking_id"]
-
-
 def test_config_and_missing_configuration(tmp_path):
     config = load_config()
     assert config.database_path == PROJECT_ROOT / "data/opentalk.sqlite3"

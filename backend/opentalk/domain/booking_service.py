@@ -1,7 +1,7 @@
 """User-scoped resource bookings with interval capacity and durable business operations."""
 
 from dataclasses import asdict
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -12,10 +12,9 @@ from opentalk.storage.repository import BookingRepository, stable_id
 
 class BookingService:
     def __init__(self, repository: BookingRepository, user_id="demo-user",
-                 session_id=None, timezone="Asia/Singapore", clock: Callable[[], datetime] | None = None):
+                 timezone="Asia/Singapore", clock: Callable[[], datetime] | None = None):
         self.repository = repository
         self.user_id = self._identifier(user_id)
-        # The legacy CLI accepts a session label; business authorization does not use it.
         self.timezone = ZoneInfo(timezone)
         self.clock = clock or (lambda: datetime.now(UTC))
         with repository.transaction() as connection:
@@ -104,23 +103,6 @@ class BookingService:
             if count >= resource.capacity:
                 raise BookingError("slot_unavailable", "The resource has no remaining capacity during this interval.")
 
-    def list_available_slots(self, day, room=None):
-        if not isinstance(day, date) or isinstance(day, datetime):
-            raise BookingError("invalid_input", "A calendar date is required.")
-        now = self._utc(self.clock())
-        result = []
-        with self.repository.connection() as connection:
-            for slot in self.repository.slots(connection):
-                if (slot.starts_at <= now or datetime.fromisoformat(slot.starts_at).astimezone(self.timezone).date() != day
-                        or (room is not None and slot.room != room)):
-                    continue
-                try:
-                    self._check_capacity(connection, self._resource(connection, slot.resource_id), slot.starts_at, slot.ends_at)
-                except BookingError:
-                    continue
-                result.append(slot)
-        return result
-
     def _owned_operation(self, connection, operation_id):
         operation = self.repository.find_operation(connection, operation_id)
         if operation is None or operation.user_id != self.user_id:
@@ -133,101 +115,13 @@ class BookingService:
             raise BookingError("booking_not_found", "The booking was not found for this user.")
         return booking
 
-    def _check_request(self, operation, kind, target_id):
-        if (operation.user_id, operation.kind, operation.target_id) != (self.user_id, kind, target_id):
-            raise BookingError("idempotency_conflict", "The operation ID belongs to a different request.")
-
-    def prepare_booking(self, slot_id, operation_id, supersedes=None):
-        self._identifier(operation_id)
-        self._identifier(slot_id)
-        if supersedes == operation_id:
-            raise BookingError("invalid_input", "A replacement requires a new operation ID.")
-        now = self._utc(self.clock())
-        with self.repository.transaction() as connection:
-            existing = self.repository.find_operation(connection, operation_id)
-            if existing:
-                self._check_request(existing, "book", slot_id)
-                if existing.supersedes != supersedes:
-                    raise BookingError("idempotency_conflict", "The replacement request has changed.")
-                return existing
-            slot = self.repository.find_slot(connection, slot_id)
-            if slot is None:
-                raise BookingError("slot_not_found", "The slot was not found.")
-            if slot.starts_at <= now:
-                raise BookingError("slot_expired", "The slot has already started.")
-            self._check_capacity(connection, self._resource(connection, slot.resource_id), slot.starts_at, slot.ends_at)
-            version = 1
-            if supersedes is not None:
-                old = self._owned_operation(connection, supersedes)
-                if old.kind != "book" or old.status != "pending":
-                    raise BookingError("operation_not_pending", "Only a pending booking can be replaced.")
-                version = old.version + 1
-                self.repository.update_operation(connection, old.operation_id, "invalidated", now)
-            operation = Operation(operation_id, self.user_id, "book", slot_id, version, "pending", None, None, supersedes)
-            self.repository.insert_operation(connection, operation, now)
-            return operation
-
-    def confirm_booking(self, operation_id, expected_version):
-        now = self._utc(self.clock())
-        failure = None
-        with self.repository.transaction() as connection:
-            operation = self._owned_operation(connection, operation_id)
-            if operation.kind != "book" or type(expected_version) is not int or operation.version != expected_version:
-                raise BookingError("confirmation_mismatch", "Confirmation must match the booking version.")
-            if operation.status == "succeeded":
-                return operation.result
-            if operation.status == "failed":
-                raise BookingError(operation.error_code, "The booking operation previously failed.")
-            if operation.status != "pending":
-                raise BookingError("operation_not_pending", "The booking operation is no longer pending.")
-            slot = self.repository.find_slot(connection, operation.target_id)
-            try:
-                if slot is None or slot.starts_at <= now:
-                    raise BookingError("slot_expired", "The slot has already started or no longer exists.")
-                self._check_capacity(connection, self._resource(connection, slot.resource_id), slot.starts_at, slot.ends_at)
-            except BookingError as error:
-                failure = error
-                self.repository.update_operation(connection, operation_id, "failed", now, error_code=error.code)
-            else:
-                booking = Booking(str(uuid4()), self.user_id, slot.slot_id, "active", now)
-                self.repository.insert_booking(connection, booking, operation_id)
-                self.repository.update_operation(connection, operation_id, "succeeded", now, booking)
-                return booking
-        raise failure
-
     def get_operation(self, operation_id):
         with self.repository.connection() as connection:
-            return self._owned_operation(connection, operation_id)
-
-    def invalidate_operation(self, operation_id):
-        now = self._utc(self.clock())
-        with self.repository.transaction() as connection:
-            operation = self._owned_operation(connection, operation_id)
-            if operation.status == "invalidated":
-                return operation
-            if operation.status != "pending":
-                raise BookingError("operation_not_pending", "Only a pending operation can be discarded.")
-            self.repository.update_operation(connection, operation_id, "invalidated", now)
             return self._owned_operation(connection, operation_id)
 
     def get_booking(self, booking_id):
         with self.repository.connection() as connection:
             return self._owned_booking(connection, booking_id)
-
-    def cancel_booking(self, booking_id, operation_id):
-        now = self._utc(self.clock())
-        with self.repository.transaction() as connection:
-            existing = self.repository.find_operation(connection, operation_id)
-            if existing:
-                self._check_request(existing, "cancel", booking_id)
-                return existing.result
-            booking = self._owned_booking(connection, booking_id)
-            operation = Operation(operation_id, self.user_id, "cancel", booking_id, 1, "pending", None, None)
-            self.repository.insert_operation(connection, operation, now)
-            self.repository.cancel_booking(connection, booking_id, now)
-            result = self.repository.find_booking(connection, booking_id)
-            self.repository.update_operation(connection, operation_id, "succeeded", now, result)
-            return result
 
     def list_operations(self):
         with self.repository.connection() as connection:
