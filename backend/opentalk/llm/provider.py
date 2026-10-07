@@ -3,7 +3,7 @@
 import math
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -25,6 +25,7 @@ class LLMConfig:
     timeout_seconds: float
     max_tool_rounds: int
     extra_body: dict
+    escalation: dict = field(default_factory=dict)
 
     @property
     def connection_options(self) -> APIConnectOptions:
@@ -36,7 +37,8 @@ def load_llm_config(path: Path | None = None) -> LLMConfig:
     path = path or PROJECT_ROOT / "config/llm.toml"
     try:
         with path.open("rb") as stream:
-            data = tomllib.load(stream)["llm"]
+            document = tomllib.load(stream)
+        data = document["llm"]
         for key in ("base_url", "model", "api_key_env"):
             if not isinstance(data[key], str) or not data[key].strip():
                 raise ValueError(f"{key} must be a non-empty string.")
@@ -60,11 +62,22 @@ def load_llm_config(path: Path | None = None) -> LLMConfig:
                     "parallel_tool_calls", "max_completion_tokens"}
         if reserved.intersection(extra_body):
             raise ValueError("extra_body must not override protocol or tool settings.")
+        escalation = document.get("reasoning", {})
+        if not isinstance(escalation, dict):
+            raise ValueError("reasoning must be a table.")
+        if escalation:
+            for key in ("max_completion_tokens", "timeout_seconds"):
+                if type(escalation[key]) not in (int, float) or not math.isfinite(escalation[key]) or escalation[key] <= 0:
+                    raise ValueError("Reasoning limits must be positive finite numbers.")
+            if type(escalation["max_completion_tokens"]) is not int:
+                raise ValueError("Reasoning token limit must be an integer.")
+            if not isinstance(escalation.get("extra_body", {}), dict) or reserved.intersection(escalation.get("extra_body", {})):
+                raise ValueError("Reasoning extra_body must not override protocol or tool settings.")
         return LLMConfig(
             base_url=data["base_url"], model=data["model"], api_key_env=data["api_key_env"],
             temperature=float(data["temperature"]),
             max_completion_tokens=data["max_completion_tokens"],
-            timeout_seconds=float(data["timeout_seconds"]),
+            timeout_seconds=float(data["timeout_seconds"]), escalation=escalation,
             max_tool_rounds=data["max_tool_rounds"], extra_body=extra_body,
         )
     except (OSError, KeyError, TypeError, ValueError) as error:
@@ -88,3 +101,14 @@ def create_llm(config: LLMConfig | None = None) -> openai.LLM:
         parallel_tool_calls=False,
         extra_body=config.extra_body,
     )
+
+
+def reasoning_config(config: LLMConfig) -> LLMConfig | None:
+    """Build an isolated higher-effort profile without mutating the default provider."""
+    if not config.escalation:
+        return None
+    profile = config.escalation
+    return replace(config, model=profile.get("model", config.model),
+                   max_completion_tokens=profile["max_completion_tokens"],
+                   timeout_seconds=profile["timeout_seconds"],
+                   extra_body=profile.get("extra_body", {}), escalation={})

@@ -158,3 +158,48 @@ def test_fragmented_tool_stream_and_role_transcript(tmp_path):
                 assert roles == ["system", "user", "assistant"]
                 assert "offline-test-key" not in report.read_text(encoding="utf-8")
     asyncio.run(scenario())
+
+
+def test_reasoning_profile_isolated_and_streaming_request(monkeypatch):
+    config = provider.load_llm_config()
+    strong = provider.reasoning_config(config)
+    assert config.extra_body == {"thinking": {"type": "disabled"}}
+    assert strong.extra_body == {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+    assert strong.max_completion_tokens == 8192
+    captured = {}
+    native_llm = livekit_openai.LLM
+    monkeypatch.setenv(config.api_key_env, "offline-test-key")
+    monkeypatch.setattr(provider.openai, "LLM", lambda **kwargs: captured.update(kwargs) or "fake")
+    provider.create_llm(strong)
+    assert captured["extra_body"]["thinking"]["type"] == "enabled"
+    provider.create_llm(config)
+    assert captured["extra_body"]["thinking"]["type"] == "disabled"
+
+    async def scenario():
+        requests = []
+
+        def transport(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            assert body["stream"] and body["thinking"] == {"type": "enabled"}
+            assert body["reasoning_effort"] == "high"
+            assert not body.get("tools")
+            chunk = {"id": "analysis", "object": "chat.completion.chunk", "created": 1,
+                     "model": strong.model, "choices": [{"index": 0, "delta": {
+                         "content": "Choose the earlier available interval.", "reasoning_content": "private"},
+                         "finish_reason": "stop"}]}
+            return httpx.Response(200, text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                                  headers={"content-type": "text/event-stream"})
+        async with AsyncOpenAI(api_key="offline", base_url="https://offline.invalid",
+                               http_client=httpx.AsyncClient(transport=httpx.MockTransport(transport))) as client:
+            async with native_llm(model=strong.model, client=client, extra_body=strong.extra_body) as model:
+                context = llm.ChatContext()
+                context.add_message(role="user", content="Compare the options.")
+                parts = []
+                async with model.chat(chat_ctx=context, tools=[]) as stream:
+                    async for chunk in stream:
+                        if chunk.delta and chunk.delta.content:
+                            parts.append(chunk.delta.content)
+                assert "".join(parts) == "Choose the earlier available interval."
+                assert len(requests) == 1
+    asyncio.run(scenario())

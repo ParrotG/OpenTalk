@@ -28,7 +28,7 @@ def test_cli_smoke_twice(tmp_path):
 def test_config_and_missing_configuration(tmp_path):
     config = load_config()
     assert config.database_path == PROJECT_ROOT / "data/opentalk.sqlite3"
-    assert config.timezone == "Asia/Shanghai"
+    assert config.timezone == "Asia/Singapore"
     with pytest.raises(ValueError, match="Invalid backend configuration"):
         load_config(tmp_path / "missing.toml")
     invalid = tmp_path / "invalid.toml"

@@ -10,9 +10,11 @@ from livekit.agents.voice import io
 
 
 class ScriptedLLM(llm.LLM):
-    def __init__(self, actions=None):
+    def __init__(self, actions=None, replies=None):
         super().__init__()
         self.actions = actions or {}
+        self.replies = replies or {}
+        self.requests = []
         self.started = asyncio.Event()
         self.slow = False
 
@@ -27,9 +29,14 @@ class ScriptedStream(llm.LLMStream):
                           and self._chat_ctx.items[index].role == "user")
         text = self._chat_ctx.items[user_index].text_content
         self._llm.started.set()
+        self._llm.requests.append({"text": text, "tools": len(self._tools)})
         outputs = [item for item in self._chat_ctx.items[user_index + 1:] if item.type == "function_call_output"]
         action = self._llm.actions.get(text)
-        if action and not outputs:
+        if isinstance(action, list):
+            action = action[len(outputs)] if len(outputs) < len(action) else None
+        elif outputs:
+            action = None
+        if action:
             name, arguments = action(self._chat_ctx) if callable(action) else action
             self._event_ch.send_nowait(llm.ChatChunk(id=uuid4().hex, delta=llm.ChoiceDelta(
                 role="assistant", tool_calls=[llm.FunctionToolCall(
@@ -37,7 +44,7 @@ class ScriptedStream(llm.LLMStream):
                 )],
             )))
             return
-        for part in ("I checked the request. ", "Please review the result."):
+        for part in (self._llm.replies.get(text, "I checked the request. "), "Please review the result."):
             self._event_ch.send_nowait(llm.ChatChunk(id=uuid4().hex,
                                                    delta=llm.ChoiceDelta(role="assistant", content=part)))
             if self._llm.slow:

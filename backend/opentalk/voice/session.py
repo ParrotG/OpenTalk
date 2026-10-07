@@ -12,9 +12,9 @@ from livekit.plugins import silero
 from opentalk.asr.provider import create_stt, load_asr_config
 from opentalk.config import load_config
 from opentalk.domain.booking_service import BookingService
-from opentalk.llm.provider import create_llm, load_llm_config
+from opentalk.llm.provider import create_llm, load_llm_config, reasoning_config
 from opentalk.storage.repository import BookingRepository
-from opentalk.tools.booking_tools import BookingTools
+from opentalk.tools.database_tools import DatabaseTools
 from opentalk.tts.provider import create_tts, load_tts_config
 from opentalk.voice.agent import BookingAgent
 from opentalk.voice.config import load_voice_config
@@ -28,7 +28,7 @@ def create_vad(config=None):
 
 @asynccontextmanager
 async def open_session(*, text_only=False, backend_config=None, voice_config=None,
-                       service=None, model=None, vad=None, stt_model=None, tts_model=None):
+                       service=None, model=None, reasoning_model=None, vad=None, stt_model=None, tts_model=None):
     voice_config = voice_config or load_voice_config()
     backend_config = backend_config or load_config()
     if service is None:
@@ -38,10 +38,18 @@ async def open_session(*, text_only=False, backend_config=None, voice_config=Non
                                   timezone=backend_config.timezone)
         service = await asyncio.to_thread(build_service)
     journal = SessionJournal(service.session_id, voice_config.log_directory / f"{service.session_id}.json")
-    agent = BookingAgent(BookingTools(service), journal)
     llm_config = load_llm_config()
+    strong_config = reasoning_config(llm_config)
+    injected_model = model is not None
     async with AsyncExitStack() as resources:
         model = await resources.enter_async_context(model or create_llm(llm_config))
+        if reasoning_model is not None:
+            reasoning_model = await resources.enter_async_context(reasoning_model)
+        elif strong_config is not None and not injected_model:
+            reasoning_model = await resources.enter_async_context(create_llm(strong_config))
+        agent = BookingAgent(DatabaseTools(service, backend_config.rooms), journal,
+                             reasoning_model=reasoning_model,
+                             reasoning_options=(strong_config or llm_config).connection_options)
         options = {"llm": model, "max_tool_steps": voice_config.max_tool_steps}
         if text_only:
             options["turn_handling"] = TurnHandlingOptions(turn_detection="manual", preemptive_generation={"enabled": False})

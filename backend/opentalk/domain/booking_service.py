@@ -11,7 +11,7 @@ from opentalk.storage.repository import BookingRepository
 
 class BookingService:
     def __init__(self, repository: BookingRepository, user_id: str = "demo-user",
-                 session_id: str = "demo-session", timezone: str = "Asia/Shanghai",
+                 session_id: str = "demo-session", timezone: str = "Asia/Singapore",
                  clock: Callable[[], datetime] | None = None):
         self.repository = repository
         self.user_id = self._identifier(user_id)

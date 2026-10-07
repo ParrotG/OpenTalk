@@ -30,11 +30,11 @@ ASR, LLM, and TTS providers will be independently configurable. A local implemen
 - Maintain only `preferred_response_language` as application-level language state.
 - Distinguish user, assistant, system, and tool content by source.
 - Record transcripts and session events throughout development.
-- Perform confirmed, transactional, idempotent booking operations through a deterministic business service.
+- Ask for natural-language confirmation before reservation edits; keep edits transactional and retries idempotent.
 
 ## Configuration and secrets
 
-Public backend settings are in `config/backend.toml`: database path, timezone, fixed demo user, rooms, and slot schedule. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. `config/asr.toml` configures the Soniox endpoint, model, language hints, sample rate, endpoint delay, and file replay settings.
+Public backend settings are in `config/backend.toml`: database path, timezone (default `Asia/Singapore`), fixed demo user, rooms, and seed schedule. `config/booking_prompt.md` contains the booking instructions; `config/booking_agent.toml` contains read-query resource limits. Relative configured database paths resolve from the project root. `config/llm.toml` configures the LLM endpoint, model, credential variable name, request limits, and provider-specific options. `config/asr.toml` configures the Soniox endpoint, model, language hints, sample rate, endpoint delay, and file replay settings.
 
 The LLM, ASR, and TTS factories load secrets from the root `.env.local` file or process environment variables. Process environment variables take precedence. The Python application explicitly loads the root file, independently of the working directory. `config/tts.toml` configures the synthesis endpoint, model, voice, primary language, sample rate, speed, timeouts, and simulated text input settings.
 
@@ -68,15 +68,22 @@ uv run --locked pytest -q
 uv run --locked pytest tests/test_llm_live.py --live-llm -q
 ```
 
-Live tests are skipped by default even when credentials exist. They use temporary databases and exercise mixed Chinese/English input, a changed proposal, confirmation, booking lookup, cancellation, and abandonment without confirmation. They assert tool calls and persisted business state rather than exact wording. LLM responses remain probabilistic; these runs are representative scenarios, not guarantees for arbitrary input.
+Live tests are skipped by default even when credentials exist. Current tests use the native AgentSession and temporary SQLite databases to exercise SQL room/range queries, natural confirmation, booking creation, updates, cancellation, abandonment without edits, and scoped reasoning. They assert tool calls and persisted state instead of exact wording.
 
-Validation on October 7, 2026: 12 offline tests passed; all three live tests passed in separate streaming and tool-scenario runs. See the [validation record](docs/LLM验证记录.md) for observations and scope.
+## Agent tools and reasoning
 
-The tests save local reports to `logs/llm-booking-lifecycle.json` and `logs/llm-no-implicit-confirmation.json`. Reports contain role-separated chat items, tool calls and outputs, turn timings, and operation events. Each run atomically replaces its report instead of appending duplicate records. Reports are ignored by Git and do not include provider credentials.
+`ConversationAgent` in `backend/opentalk/agents/base.py` owns native session hooks, language preference, stale-response checks, logging, and the generic `escalate_reasoning` tool. `BookingAgent` subclasses it and adds exactly two business tools:
 
-`create_llm()` is used directly by the native application session. `BookingTools.get_tools()` returns native LiveKit function tools. The bounded text driver in `tests/text_harness.py` uses LiveKit's tool validation and execution helpers; it is only test scaffolding and does not create an application Agent, worker, room, or voice pipeline.
+- `query(sql)`: one read-only SQLite statement, including SELECT, joins, CTEs, aggregates, schema discovery, and date-range searches. A read-only connection and SQLite authorizer reject writes, ATTACH, PRAGMA, transaction control, and extension loading. Configurable row, execution-step, and time limits bound queries; truncated results are explicitly marked.
+- `edit(action, room, starts_at, ends_at, new_room?, new_starts_at?, new_ends_at?)`: add a reservation, cancel a matching reservation, or atomically move it to a replacement interval. It can create an interval that was not seeded. Cancellation retains historical records. Updates preserve the booking ID. Offset-free timestamps use the configured timezone; timestamps are stored in UTC.
 
-Committed writes require host authorization. `authorize_confirmation(operation_id, version)` and `authorize_cancellation(booking_id)` are Python methods, not LLM tools. The live test explicitly grants permission after a scripted user confirmation or cancellation request. This verifies the execution boundary; The application BookingAgent separately binds exact confirmation commands to a fully presented proposal and exact cancellation commands to the last confirmed or checked booking. Arbitrary natural-language authorization is not implemented. The LLM cannot authorize itself.
+The prompt asks the assistant to describe the exact change and obtain agreement in a later user turn before calling edit. Ordinary agreement is accepted; there are no fixed confirmation words, host-generated recaps, proposal-version grants, or separate confirmation tools. Confirmation is an LLM conversation policy, not a deterministic authorization guarantee. All local demo data is queryable; there is no authentication or per-user restriction in these tools.
+
+Edits validate intervals and reject overlapping active reservations. A host-generated request key combines session, user turn, and normalized edit arguments, so repeated identical calls within a turn return the committed result. Writes and audit events commit together. Already started writes finish and are recorded when speech is interrupted; stale calls are rejected before execution. SQLite schema and legacy booking CLI remain compatible, but the old seven-tool interface is not exposed to the current agent.
+
+The default profile disables thinking. `escalate_reasoning(task, message?)` delivers a brief acknowledgement and makes one isolated streaming analysis request with the configurable `[reasoning]` profile in `config/llm.toml`. The current profile uses the same model, thinking enabled, `reasoning_effort = "high"`, an 8192-token limit, and a 60-second timeout. It returns the answer content, not the reasoning trace, and the default agent continues with query/edit. It is limited to one escalation per user turn and never changes the shared/default provider settings.
+
+The stronger request has no tools and receives a self-contained task with relevant facts. This avoids requiring a provider-specific reasoning-history extension to the native tool loop. DeepSeek requires reasoning history to be passed back for thinking requests with tools; see the [official thinking-mode documentation](https://api-docs.deepseek.com/guides/thinking_mode/). Other providers can replace the configured reasoning body or omit the profile to disable escalation.
 
 ## Streaming ASR with a local audio file
 
@@ -147,7 +154,7 @@ PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker console
 
 The text entrypoint uses the same native agent and tool execution, reads standard input, and exits on `/quit`, EOF, or Ctrl+C. It does not test ASR/TTS or acoustic interruptions. The microphone console is provided by the locked SDK and needs no browser or LiveKit Server. Its Python CLI is marked deprecated by LiveKit but remains available in the locked version; it does not require installing the separate `lk` CLI.
 
-Ask for Room A on January 2, 2030, select a time, and wait for the full proposal recap. Use a separate exact `confirm booking` or `确认预约` turn to commit. To change the time, ask for another slot before confirming. Use `cancel booking` or `取消预约` to cancel the last confirmed or checked booking. Implicit yes, modified confirmation sentences, stale versions, and interrupted recaps do not authorize a write. Host-generated recaps and diagnostics are English. Multilingual user input and generated LLM responses are preserved. `请用英语回复` / `please reply in English` and `请用中文回复` / `please reply in Chinese` set the explicit reply preference and subsequent TTS language.
+Ask for all known rooms or available intervals across dates. To reserve, move, or cancel a reservation, describe the request and answer the assistant’s confirmation question naturally. The agent should ask again after changed details and should not interpret a refusal, question, or interrupted explanation as confirmation. Multilingual user input and generated LLM responses are preserved. `请用英语回复` / `please reply in English` and `请用中文回复` / `please reply in Chinese` set the explicit reply preference and subsequent TTS language.
 
 Public session/VAD settings are in `config/voice.toml`; backend and provider settings remain independent. Reports under `logs/voice/<session_id>.json` upsert messages by native message ID and record tool results separately. Room/console mode saves snapshots every configured interval (one second by default); text mode saves after each turn. Both save on close. Snapshots replace files atomically, and generated text is not claimed to be exact spoken text. Already started transactions retain their result even if speech is cancelled.
 
@@ -160,11 +167,11 @@ PYTHONPATH=backend uv run --locked python -m opentalk.voice.worker dev
 
 The agent registers as `opentalk-booking`; a room client must explicitly dispatch that agent name. This entrypoint is ready for a later browser client, but this change does not add a browser, token service, or LiveKit Server.
 
-Validation on October 7, 2026: the complete offline suite passed with 64 tests and 3 paid LLM tests skipped, including 16 realtime-session tests. Offline tests use the real native session and tool runner with scripted streaming provider doubles. They cover proposal changes, explicit writes, language preference, audio input/output, interruption, stale tool calls, transaction completion after speech cancellation, atomic reports, and headless standard-input interaction. Silero also performs actual local inference on silence. Acoustic barge-in, provider timing, and microphone quality require manual testing. See the Chinese [realtime conversation guide](docs/实时语音验证指南.md).
+Validation records and current test coverage are listed in the realtime conversation guide. Offline tests use the real native session and tool runner with scripted streaming provider doubles. They cover multiple SQL queries per turn, edits, language preference, audio input/output, interruption, stale tool calls, transaction completion after speech cancellation, atomic reports, scoped reasoning, and headless standard-input interaction. Silero also performs actual local inference on silence. Acoustic barge-in, provider timing, and microphone quality require manual testing. See the Chinese [realtime conversation guide](docs/实时语音验证指南.md).
 
-## Run the booking backend
+## Legacy booking CLI
 
-Run these commands from the project root:
+This CLI retains the original prepare/confirm workflow for existing backend tests and manual inspection; it is not the current agent tool interface. Run these commands from the project root:
 
 ```bash
 uv sync --locked --python 3.11
@@ -191,7 +198,7 @@ Replace `SLOT_ID` and `BOOKING_ID` with IDs returned by earlier commands. CLI ou
 
 Preparing a proposal does not reserve a slot. To change an unconfirmed proposal, prepare another slot with a new operation ID and `--supersedes proposal-1`; the returned version must be used for confirmation. `invalidate OPERATION_ID` discards a pending proposal.
 
-Reuse the operation ID and unchanged arguments when retrying. Query `operation OPERATION_ID` after a lost response. Successful operations retain their original result snapshot, even if the booking is subsequently cancelled; use `booking BOOKING_ID` for its current state. Cancellation is an explicit write command; the conversation agent requires a separate exact cancellation command.
+Reuse the operation ID and unchanged arguments when retrying. Query `operation OPERATION_ID` after a lost response. Successful operations retain their original result snapshot, even if the booking is subsequently cancelled; use `booking BOOKING_ID` for its current state. Cancellation is an explicit CLI write command. The current conversation agent instead uses edit after natural-language confirmation.
 
 The service writes business state and operation events in one transaction. Confirmation conflicts and expiry persist a failed operation. This synchronous backend does not persist intermediate executing/unknown states; a caller with an unknown response can recover the committed outcome by operation ID. Slots are fixed, non-overlapping intervals per room. There is no HTTP server, authentication flow, or SQLite transcript storage; the fixed user and session are demo context, not production authentication. The voice session writes role-separated transcripts, response status, provider usage, and tool/business events to local JSON reports.
 
@@ -206,7 +213,7 @@ Checked on October 6, 2026:
 | Node.js | v24.15.0 |
 | Python 3.11 | 3.11.14 at `/usr/bin/python3.11` |
 | Default `python3` | 3.10.12; project setup must explicitly select Python 3.11 |
-| LiveKit CLI and Server | Not found on the current PATH |
+| Local LiveKit Server | User reports installation and manually starts `livekit-server --dev`; Cloud is not required |
 | Project dependencies | pytest, LiveKit Agents/OpenAI/Soniox/Silero plugins, PyAV, and dotenv installed with uv on October 7, 2026 |
 | Git metadata | Repository present during the October 7 implementation |
 | PortAudio system library | Not found during the October 7 inspection; required for local microphone console |

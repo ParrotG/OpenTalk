@@ -9,3 +9,14 @@ max_tool_rounds = 8
 
 [llm.extra_body.thinking]
 type = "disabled"
+
+# One isolated analysis request per escalation; ordinary calls retain the default profile.
+[reasoning]
+max_completion_tokens = 8192
+timeout_seconds = 60.0
+
+[reasoning.extra_body]
+reasoning_effort = "high"
+
+[reasoning.extra_body.thinking]
+type = "enabled"
