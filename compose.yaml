@@ -125,6 +125,20 @@ services:
     init: true
     logging: *logging
 
+  document-parser:
+    profiles: [documents]
+    image: opentalk-document-parser:local
+    build:
+      context: .
+      target: document-parser
+    init: true
+    logging: *logging
+    volumes:
+      - ${OPENTALK_DOCUMENT_INPUT_DIR:-./documents}:/input:ro
+      - ${OPENTALK_DOCUMENTS_DIR:-./data/documents}:/app/data/documents
+      - document-model-cache:/home/app/.cache
+
 volumes:
   session-data:
   telemetry-data:
+  document-model-cache:

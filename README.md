@@ -3,7 +3,8 @@
 OpenTalk is a browser-based, realtime voice-assistant stack. It combines WebRTC transport, a native
 LiveKit Agents session, independently replaceable streaming ASR / LLM / TTS providers, extensible agent
 capabilities, and durable session history. The repository includes a text-only agent entry point,
-a local microphone console, a minimal React/Next.js web client, Docker Compose packaging, and offline verification tools.
+a local microphone console, a minimal React/Next.js web client, versioned Docling PDF parsing,
+Docker Compose packaging, and offline verification tools.
 
 The generic conversation agent is the default runtime. New business capabilities can be added
 through the agent factory without rewriting transport or session persistence.
@@ -330,6 +331,8 @@ backend/opentalk/
   sessions/tracing.py         Optional OpenTelemetry-to-SQLite exporter.
   sessions/telemetry.py       Bounded event/metric storage.
   sessions/api.py             Control API for allocation, tokens, history, and end requests.
+  documents/parser.py         Docling PDF parsing and versioned file artifact export.
+  documents/parse.py          Manual PDF parsing command-line entry point.
 frontend/
   app/ and components/        LiveKit browser UI and server-side control proxy.
 config/                       Public, non-secret configuration for providers and runtime.
@@ -506,13 +509,52 @@ LiveKit API secrets in `NEXT_PUBLIC_*` variables or the frontend environment.
 | `config/tts.toml` | Soniox TTS endpoint, model, voice, primary language, sample rate, and timing settings. |
 | `config/voice.toml` | LiveKit URL, agent name, VAD parameters, endpointing, and interruption duration. |
 | `config/sessions.toml` | Session/telemetry database paths, heartbeat/lease limits, context size, API host/port, token TTL, and tracing switch. |
+| `config/documents.toml` | Global PDF storage, parsing limits, image export, table mode, and Docling enrichment switches. |
 | `config/livekit-local.yaml` | Local LiveKit development server configuration for same-machine browser testing. |
 | `config/docker/` | Container-specific overrides for backend and session paths. |
 
 Relative database paths are resolved from the project root, independently of the process working
 directory.
 
-### 7.4 Start the full local stack
+### 7.4 Parse a PDF for inspection
+
+PDF parsing is currently an independent backend command. It stores the original PDF globally by
+content hash and writes every parse into a separate immutable version directory. It does not create
+embeddings or expose retrieval to the conversation agent yet.
+
+Install the optional parser dependency group without removing unrelated packages from an existing
+environment:
+
+```bash
+uv sync --locked --inexact --group documents
+```
+
+Parse one local PDF:
+
+```bash
+PYTHONPATH=backend uv run --locked --group documents \
+  python -m opentalk.documents.parse /path/to/document.pdf
+```
+
+The command prints the document ID, parse version and artifact paths. The default output root is
+`data/documents`. Each parse contains `manifest.json`, lossless Docling JSON, readable Markdown, an
+`elements.jsonl` structure/provenance view, referenced images, visual crops, and HTML/CSV table
+exports. Picture descriptions, picture classification, formula recognition, code enrichment, OCR,
+and accurate table extraction are enabled by default. These use local Docling models; the first run
+may download model artifacts. Remote model services are disabled.
+
+The optional Compose tool uses bind-mounted input and output directories:
+
+```bash
+OPENTALK_DOCUMENT_INPUT_DIR=/path/to/pdfs \
+OPENTALK_DOCUMENTS_DIR=/path/to/document-data \
+docker compose --profile documents run --build --rm document-parser /input/document.pdf
+```
+
+The input directory is read-only. PDF originals and every parse version are written beneath the
+host output directory. A separate named volume caches downloaded Docling model artifacts.
+
+### 7.5 Start the full local stack
 
 Prepare the Python and frontend dependencies once:
 
@@ -547,7 +589,7 @@ LiveKit `7880`, RTC TCP `7881`, RTC UDP `7882`, session API `8080`, worker healt
 
 For a production-style frontend build use `pnpm build && pnpm start` instead of `pnpm dev`.
 
-### 7.5 Docker Compose
+### 7.6 Docker Compose
 
 Configure `.env.local`, then run from the project root:
 
@@ -572,7 +614,7 @@ docker compose --profile test run --build --rm --no-deps backend-tests
 See the Docker guide in `docs/` for port overrides, persistence and
 media-path verification.
 
-### 7.6 Text-only agent
+### 7.7 Text-only agent
 
 The text console does not require LiveKit, ASR, TTS, a microphone, or PortAudio. It uses the same
 agent and tool lifecycle:
@@ -586,7 +628,7 @@ It supports session commands such as `/session`, `/session list`, `/session hist
 resume`, `/session end`, and `/quit`. A model credential is required once a normal message or a
 session resume starts the agent.
 
-### 7.7 Component smoke tests and tests
+### 7.8 Component smoke tests and tests
 
 All commands below run from the project root. The smoke tests call paid provider APIs; the offline
 test suite does not.
@@ -611,7 +653,7 @@ PYTHONPATH=backend uv run --locked pytest -q
 PYTHONPATH=backend uv run --locked pytest tests/test_llm_live.py --live-llm -q
 ```
 
-### 7.8 More documentation
+### 7.9 More documentation
 
 The README is the high-level guide. The `docs/` directory contains detailed validation guides,
 including independent ASR, TTS, session, realtime voice, web, Docker, test procedures.

@@ -16,6 +16,18 @@ COPY tests ./tests
 ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 CMD ["python", "-m", "pytest", "-q"]
 
+# PDF parsing is an optional, model-heavy tool and stays out of the realtime image.
+FROM dependencies AS document-parser
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --group documents
+RUN useradd --uid 10001 --create-home app \
+    && mkdir -p /app/data/documents \
+    && chown -R app:app /app /home/app
+COPY --chown=app:app backend ./backend
+COPY --chown=app:app config ./config
+ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+USER app
+ENTRYPOINT ["python", "-m", "opentalk.documents.parse"]
+
 FROM python:3.11.14-slim-bookworm AS runtime
 WORKDIR /app
 RUN useradd --uid 10001 --create-home app \

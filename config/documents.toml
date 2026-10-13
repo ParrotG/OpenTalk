@@ -1,0 +1,13 @@
+[documents]
+storage_root = "data/documents"
+max_file_size_mb = 100
+max_pages = 500
+document_timeout_seconds = 600.0
+images_scale = 2.0
+table_mode = "accurate"
+do_ocr = true
+do_picture_description = true
+do_picture_classification = true
+do_formula_enrichment = true
+do_code_enrichment = true
+do_chart_extraction = false

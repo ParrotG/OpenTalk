@@ -14,6 +14,9 @@ dev = [
     "pytest>=8,<9",
     "ruff>=0.14,<1",
 ]
+documents = [
+    "docling[vlm]>=2.138,<3",
+]
 
 [tool.uv]
 package = false
