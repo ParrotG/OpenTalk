@@ -13,7 +13,10 @@
     "typecheck": "tsc --noEmit",
     "test": "playwright test",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "check": "pnpm lint && pnpm typecheck && pnpm format:check"
   },
   "dependencies": {
     "@livekit/components-react": "2.9.24",
@@ -28,10 +31,13 @@
     "tailwind-merge": "3.3.1"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "3.3.7",
     "@playwright/test": "1.63.0",
     "@types/node": "24.13.3",
     "@types/react": "19.1.12",
     "@types/react-dom": "19.1.9",
+    "eslint": "9.39.5",
+    "eslint-config-next": "15.5.18",
     "prettier": "3.6.2",
     "typescript": "5.9.2"
   }

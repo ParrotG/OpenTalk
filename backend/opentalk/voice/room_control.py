@@ -8,7 +8,6 @@ from livekit import rtc
 from livekit.agents.voice import io
 from livekit.agents.voice.transcription import TranscriptSynchronizer
 
-
 VOICE_MODE_METHOD = "opentalk.set_voice_mode"
 
 

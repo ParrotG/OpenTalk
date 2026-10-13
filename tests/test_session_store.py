@@ -1,7 +1,5 @@
 """Verify durable sessions, concurrent ownership, replay safety, and bounded telemetry."""
 
-import json
-import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 

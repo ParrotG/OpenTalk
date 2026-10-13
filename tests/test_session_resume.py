@@ -3,20 +3,17 @@
 import asyncio
 import json
 import os
-import sqlite3
 from dataclasses import replace
 
 import pytest
-from livekit.agents import llm
+from voice_fakes import ScriptedLLM
 
 from opentalk.sessions import config as session_settings
 from opentalk.sessions.store import SessionError, SessionStore
 from opentalk.voice.session import open_session
-from voice_fakes import ScriptedLLM
 
 
 def test_native_history_userdata_resume_and_no_tool_replay(tmp_path):
-    config = session_settings.load_session_config()
     model = ScriptedLLM()
     async def scenario():
         async with open_session(text_only=True, agent_key="conversation", model=model) as (session, agent, journal):
@@ -171,9 +168,10 @@ def test_restored_tool_receipts_do_not_execute_again(tmp_path):
 
 def test_optional_native_traces_are_separate_and_do_not_copy_content(tmp_path):
     from livekit.agents.telemetry import tracer
-    from opentalk.sessions.tracing import session_trace
+
     from opentalk.sessions.state import SessionState
     from opentalk.sessions.telemetry import TelemetryStore
+    from opentalk.sessions.tracing import session_trace
     config = replace(session_settings.load_session_config(), tracing_enabled=True)
     async def scenario():
         async with session_trace(config, SessionState("session", "attempt")):

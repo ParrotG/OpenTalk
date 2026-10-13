@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 
 from livekit.agents import Agent, RunContext, function_tool, llm
 
-
 VOICE_INSTRUCTIONS = (
     " You are a voice assistant. Respond in natural conversational language suitable "
     "for speaking aloud. Use short, clear sentences and verbal transitions. Do not use "

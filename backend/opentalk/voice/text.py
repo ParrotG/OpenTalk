@@ -13,7 +13,6 @@ from opentalk.sessions.store import SessionError, SessionStore
 from opentalk.voice.factories import agent_factory
 from opentalk.voice.session import open_session
 
-
 HELP = """Session commands:
 /session                         Show the current session.
 /session list [limit]            List saved sessions.

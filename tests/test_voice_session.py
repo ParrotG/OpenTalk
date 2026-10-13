@@ -5,16 +5,16 @@ import os
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
 from livekit import rtc
 from livekit.agents import vad
 from livekit.agents.llm import find_function_tools
-import pytest
+from voice_fakes import FakeSTT, FakeTTS, PlaybackSink, QueueAudioInput, ScriptedLLM, tool_factory
 
 from opentalk.agents.base import ConversationAgent
 from opentalk.voice.config import load_voice_config
 from opentalk.voice.factories import agent_factory
 from opentalk.voice.session import create_vad, open_session
-from voice_fakes import FakeSTT, FakeTTS, PlaybackSink, QueueAudioInput, ScriptedLLM, tool_factory
 
 
 def test_language_preference_survives_mixed_input(tmp_path):

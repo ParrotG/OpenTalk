@@ -15,12 +15,13 @@ from livekit.agents import room_io
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "tests")]
+from voice_fakes import FakeSTT, FakeTTS, ScriptedLLM
+
 from opentalk.sessions.api import create_app
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionStore
 from opentalk.voice.room_control import RoomAudioMode, close_disconnected_session
 from opentalk.voice.session import open_session
-from voice_fakes import FakeSTT, FakeTTS, ScriptedLLM
 
 URL = "ws://127.0.0.1:18280"
 

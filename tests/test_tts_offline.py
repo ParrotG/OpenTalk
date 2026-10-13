@@ -14,7 +14,6 @@ from livekit.plugins import soniox
 
 from opentalk.tts import provider, smoke
 
-
 TEXT = (
     "Your meeting room is available tomorrow morning. "
     "Room A is ready for your team at ten o'clock. "

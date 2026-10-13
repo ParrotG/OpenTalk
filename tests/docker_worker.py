@@ -8,6 +8,7 @@ from livekit.agents import AgentServer, JobContext, cli
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from voice_fakes import FakeSTT, FakeTTS, ScriptedLLM
+
 from opentalk.voice import worker
 from opentalk.voice.session import open_session
 

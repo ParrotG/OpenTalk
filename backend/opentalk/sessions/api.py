@@ -13,8 +13,8 @@ from livekit import api
 from livekit.protocol.agent_dispatch import RoomAgentDispatch
 from livekit.protocol.room import RoomConfiguration
 
-from opentalk.config import PROJECT_ROOT
 from opentalk.asr.provider import load_asr_config
+from opentalk.config import PROJECT_ROOT
 from opentalk.llm.provider import load_llm_config
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionError, SessionStore

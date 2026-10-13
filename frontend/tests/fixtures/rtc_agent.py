@@ -2,12 +2,12 @@
 
 import asyncio
 import signal
+import sys
 import tempfile
 import time
 import uuid
-import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 from aiohttp import web
 from livekit import api, rtc

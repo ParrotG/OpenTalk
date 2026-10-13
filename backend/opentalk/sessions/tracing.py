@@ -1,7 +1,7 @@
 """Optional native OpenTelemetry spans in the bounded diagnostics database."""
 
-import logging
 import asyncio
+import logging
 import threading
 from contextlib import asynccontextmanager
 
@@ -11,7 +11,6 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, Spa
 from opentelemetry.trace import use_span
 
 from opentalk.sessions.telemetry import TelemetryStore
-
 
 logger = logging.getLogger(__name__)
 _providers = {}

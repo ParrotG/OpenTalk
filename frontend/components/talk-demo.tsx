@@ -298,6 +298,8 @@ export function TalkDemo() {
   return (
     <main className="shell">
       <header className="header" ref={header}>
+        {/* A full page reload checkpoints and reconnects the active conversation. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a href="/" className="brand">
           OpenTalk
         </a>

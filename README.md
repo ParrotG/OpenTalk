@@ -620,8 +620,8 @@ checks and should be consulted when changing providers, database schema, or depl
 
 Useful starting points:
 
-- [Development and validation reference](docs/开发与验证参考.md) preserves component commands,
+- [Testing and validation](docs/测试与验收.md) preserves component commands,
   previously kept in the README.
-- [Development plan](docs/开发计划.md) documents the staged architecture and acceptance criteria.
-- The per-component guides cover ASR, TTS, sessions, realtime voice, the browser client, Docker,
-  and browser test cases.
+- [System design](docs/系统设计.md) defines architecture and module interfaces.
+- The validation specification covers ASR, TTS, sessions, realtime voice, the browser client,
+  Docker, and browser test cases.

@@ -10,11 +10,10 @@ from livekit.agents import AgentServer, JobContext, JobProcess, cli, room_io
 from opentalk.config import PROJECT_ROOT
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionStore
-from opentalk.voice.factories import agent_factory
 from opentalk.voice.config import load_voice_config
-from opentalk.voice.session import create_vad, open_session
+from opentalk.voice.factories import agent_factory
 from opentalk.voice.room_control import RoomAudioMode, close_disconnected_session
-
+from opentalk.voice.session import create_vad, open_session
 
 load_dotenv(PROJECT_ROOT / ".env.local", override=False)
 configuration = load_voice_config()

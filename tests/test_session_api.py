@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 from aiohttp.test_utils import TestClient, TestServer
 from livekit import api
 
-from opentalk.sessions.api import create_app
 from opentalk.sessions import config as session_settings
+from opentalk.sessions.api import create_app
 from opentalk.sessions.store import SessionStore
 
 

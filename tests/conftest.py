@@ -7,6 +7,7 @@ import pytest
 def isolated_session_storage(tmp_path, monkeypatch):
     """Keep session and telemetry writes away from the demo databases."""
     from dataclasses import replace
+
     from opentalk.sessions import config
     configuration = replace(config.load_session_config(), database_path=tmp_path / "sessions.sqlite3",
                             telemetry_database_path=tmp_path / "telemetry.sqlite3")

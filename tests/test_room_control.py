@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import pytest
 from livekit import rtc
 from livekit.agents.voice import io
+from voice_fakes import FakeSTT, FakeTTS, PlaybackSink, ScriptedLLM
 
 from opentalk.voice.room_control import RoomAudioMode, close_disconnected_session
 from opentalk.voice.session import open_session
-from voice_fakes import FakeSTT, FakeTTS, PlaybackSink, ScriptedLLM
 
 
 class CountingTTS(FakeTTS):

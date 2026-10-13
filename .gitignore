@@ -19,3 +19,5 @@ frontend/playwright-report/
 assets/
 # Local ONNX Runtime telemetry state.
 :memory:.ses
+
+.ruff_cache/

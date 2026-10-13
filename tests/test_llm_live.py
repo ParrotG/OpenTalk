@@ -1,7 +1,7 @@
 """Opt-in real model tests for streaming and the generic conversation agent."""
 
-import asyncio
 import ast
+import asyncio
 from dataclasses import replace
 
 import pytest

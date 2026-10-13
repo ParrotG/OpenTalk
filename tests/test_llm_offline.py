@@ -9,10 +9,10 @@ import pytest
 from livekit.agents import llm
 from livekit.plugins import openai as livekit_openai
 from openai import AsyncOpenAI
+from voice_fakes import tool_factory
 
 from opentalk.llm import provider
 from opentalk.voice.session import open_session
-from voice_fakes import tool_factory
 
 
 def test_provider_configuration_and_environment_precedence(monkeypatch, tmp_path):
