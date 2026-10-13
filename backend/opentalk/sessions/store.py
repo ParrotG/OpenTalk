@@ -100,7 +100,7 @@ class SessionStore:
                              (limit, offset)).fetchall()
             return [self._get(db, row[0]) for row in ids]
 
-    def reserve(self, *, request_id, mode="text", agent_key="booking", resume_id=None):
+    def reserve(self, *, request_id, mode="text", agent_key="conversation", resume_id=None):
         if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200:
             raise SessionError("invalid_request", "Provide a non-empty request ID of at most 200 characters.")
         if mode not in {"text", "room"} or not isinstance(agent_key, str) or not agent_key:

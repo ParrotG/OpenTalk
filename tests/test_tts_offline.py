@@ -18,8 +18,8 @@ from opentalk.tts import provider, smoke
 TEXT = (
     "Your meeting room is available tomorrow morning. "
     "Room A is ready for your team at ten o'clock. "
-    "请先确认日期和时间，then we can complete your booking. "
-    "The reservation has not yet been confirmed, so please review the details carefully."
+    "请先说明你的问题，then we can explore the options. "
+    "The explanation is ready, so please review the details carefully."
 )
 
 

@@ -8,7 +8,6 @@ import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 
-from opentalk.config import load_config
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionError, SessionStore
 from opentalk.voice.factories import agent_factory
@@ -32,12 +31,12 @@ def display(value):
     print(json.dumps(value, ensure_ascii=False, indent=2), flush=True)
 
 
-async def converse(backend_config=None, *, session_config=None, store=None, agent_key="booking", factory=None):
+async def converse(*, session_config=None, store=None, agent_key="conversation", factory=None):
     configuration = session_config or load_session_config()
     store = store or await asyncio.to_thread(SessionStore, configuration.database_path,
                                              lease_seconds=configuration.lease_seconds,
                                              pending_seconds=configuration.token_ttl_seconds)
-    factory = factory or agent_factory(agent_key, backend_config=backend_config)
+    factory = factory or agent_factory(agent_key)
     stack = AsyncExitStack()
     current = None
     closed = asyncio.Event()
@@ -157,13 +156,11 @@ async def converse(backend_config=None, *, session_config=None, store=None, agen
 
 def main():
     parser = argparse.ArgumentParser(description="Talk to the agent and inspect or resume SQLite sessions.")
-    parser.add_argument("--config", type=Path, help="Booking backend configuration path.")
     parser.add_argument("--session-config", type=Path, help="Session persistence configuration path.")
-    parser.add_argument("--agent", choices=("booking", "conversation"), default="booking")
+    parser.add_argument("--agent", choices=("conversation",), default="conversation")
     args = parser.parse_args()
     try:
-        asyncio.run(converse(load_config(args.config) if args.agent == "booking" else None,
-                             session_config=load_session_config(args.session_config), agent_key=args.agent))
+        asyncio.run(converse(session_config=load_session_config(args.session_config), agent_key=args.agent))
     except KeyboardInterrupt:
         print("Conversation cancelled. The active session cannot be resumed.", file=sys.stderr)
         raise SystemExit(130)

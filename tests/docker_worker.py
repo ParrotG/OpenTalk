@@ -13,7 +13,7 @@ from opentalk.voice.session import open_session
 
 
 def offline_session(**options):
-    model = ScriptedLLM({"List resources": ("query", {"sql": "SELECT name, capacity FROM resources ORDER BY name"})})
+    model = ScriptedLLM()
     return open_session(**options, model=model, stt_model=FakeSTT(), tts_model=FakeTTS())
 
 

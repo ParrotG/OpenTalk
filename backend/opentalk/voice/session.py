@@ -30,7 +30,7 @@ def create_vad(config=None):
 
 @asynccontextmanager
 async def open_session(*, text_only=False, voice_config=None, session_config=None,
-                       store=None, reservation=None, resume_id=None, factory=None, agent_key="booking",
+                       store=None, reservation=None, resume_id=None, factory=None, agent_key="conversation",
                        model=None, reasoning_model=None, vad=None, stt_model=None, tts_model=None):
     voice_config = voice_config or load_voice_config()
     session_config = session_config or load_session_config()

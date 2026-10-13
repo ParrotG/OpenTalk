@@ -51,11 +51,11 @@ PYTHONPATH=backend uv run --locked python -m opentalk.asr.replay --help
 
 | 用例 | 示例录音内容 | 检查重点 |
 | --- | --- | --- |
-| 中文 | 请帮我查询明天上午会议室 A 的可用时间。 | 中文原文、时间与房间名称 |
-| 英文 | Please check Room A tomorrow morning. | 不翻译成中文 |
-| 句内混合 | 帮我 book Room A，明天 ten o'clock，先不要确认。 | 同一句中保留中英原文 |
+| 中文 | 请帮我解释一下实时语音助手的工作流程。 | 中文原文、时间与房间名称 |
+| 英文 | Please explain streaming audio tomorrow morning. | 不翻译成中文 |
+| 句内混合 | 帮我 explain streaming audio，明天 ten o'clock 再讨论。 | 同一句中保留中英原文 |
 | 跨句切换 | 先说一句中文，再说一句完整英文。 | 在同一连接内识别，不重建会话 |
-| 改口 | 预约九点，不对，改成 ten o'clock。 | 保留改口内容；ASR 本身不执行预约 |
+| 改口 | 明天九点讨论，不对，改成 ten o'clock。 | 保留改口内容；ASR 本身不执行业务 |
 | 多个停顿 | 多次说话，句间停顿 2～3 秒。 | 最终片段和消息编号可区分 |
 | 无尾部停顿 | 最后一个词说完即结束录音。 | 回放追加静音后，末尾内容是否最终化 |
 

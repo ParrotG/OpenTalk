@@ -23,17 +23,18 @@ def test_room_token_idempotency_end_and_resume(monkeypatch):
                          api_key="test-key", api_secret="test-secret-012345678901234567890123456789")
         async with TestClient(TestServer(app)) as client:
             assert (await client.get("/health")).status == 200
-            payload = {"request_id": "create", "agent": "conversation", "voice_enabled": False}
+            payload = {"request_id": "create", "voice_enabled": False}
             response = await client.post("/sessions", json=payload)
             assert response.status == 200
             first = await response.json()
             saved = first["session"]
+            assert saved["agent_key"] == "conversation"
             assert first["serverUrl"] == "ws://browser.example:7880"
             claims = api.TokenVerifier("test-key", "test-secret-012345678901234567890123456789").verify(first["participantToken"])
             assert claims.video.room == saved["room_name"] and claims.video.room_join
             assert not claims.video.room_admin
             dispatch = claims.room_config.agents[0]
-            assert dispatch.agent_name == "opentalk-booking"
+            assert dispatch.agent_name == "opentalk-conversation"
             assert json.loads(dispatch.metadata)["attempt_id"] == saved["attempt_id"]
             assert json.loads(dispatch.metadata)["voice_enabled"] is False
             second = await (await client.post("/sessions", json=payload)).json()
@@ -88,7 +89,7 @@ def test_service_checks_report_unavailable_dependencies_without_provider_calls(m
         async def health(request):
             return web.Response(text="OK")
         async def information(request):
-            return web.json_response({"agent_name": "opentalk-booking"})
+            return web.json_response({"agent_name": "opentalk-conversation"})
         worker.add_routes([web.get("/", health), web.get("/worker", information)])
         async with TestServer(worker) as worker_server:
             monkeypatch.setenv("OPENTALK_WORKER_HEALTH_URL", str(worker_server.make_url("/")))

@@ -5,8 +5,10 @@ import json
 from uuid import uuid4
 
 from livekit import rtc
-from livekit.agents import llm, stt, tts
+from livekit.agents import RunContext, function_tool, llm, stt, tts
 from livekit.agents.voice import io
+
+from opentalk.agents.base import ConversationAgent
 
 
 class ScriptedLLM(llm.LLM):
@@ -150,3 +152,30 @@ class PlaybackSink(io.AudioOutput):
             self.active = False
             self.on_playback_finished(playback_position=self.position, interrupted=True)
             self.position = 0.0
+
+
+class ToolAgent(ConversationAgent):
+    """Provide a deterministic test-only tool for native orchestration checks."""
+
+    def __init__(self, *, calls, action=None, **options):
+        self.calls = calls
+        self.action = action
+        super().__init__(instructions="You are a helpful conversational assistant.", **options)
+
+    @function_tool()
+    async def echo(self, context: RunContext, text: str) -> dict:
+        """Return the supplied text through the guarded tool execution path."""
+        async def work():
+            if self.action is not None:
+                result = await self.action(text)
+            else:
+                result = {"ok": True, "text": text}
+            self.calls.append(text)
+            return result
+        return await self.execute(context, "echo", work)
+
+
+def tool_factory(calls, action=None):
+    async def create(**options):
+        return ToolAgent(calls=calls, action=action, **options)
+    return create

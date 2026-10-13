@@ -37,7 +37,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       }
       if (path === 'sessions') {
         // Agent selection stays on the server; the UI has no business-specific controls.
-        let agent = process.env.OPENTALK_AGENT || 'booking';
+        let agent = process.env.OPENTALK_AGENT || 'conversation';
         if (data.resume_session_id) {
           if (
             typeof data.resume_session_id !== 'string' ||

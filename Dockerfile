@@ -19,7 +19,7 @@ CMD ["python", "-m", "pytest", "-q"]
 FROM python:3.11.14-slim-bookworm AS runtime
 WORKDIR /app
 RUN useradd --uid 10001 --create-home app \
-    && mkdir -p data/booking data/sessions logs \
+    && mkdir -p data/sessions logs \
     && chown -R app:app /app
 COPY --from=dependencies /app/.venv ./.venv
 COPY backend ./backend

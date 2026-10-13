@@ -1,7 +1,7 @@
 [project]
 name = "opentalk"
 version = "0.1.0"
-description = "A streaming voice demo with reliable meeting-room operations"
+description = "A streaming voice assistant with durable conversation sessions"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "av>=16,<19",

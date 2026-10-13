@@ -49,13 +49,6 @@ services:
       timeout: 3s
       retries: 12
 
-  booking-init:
-    <<: *backend
-    command: ["python", "-m", "opentalk", "admin", "init"]
-    volumes:
-      - booking-data:/app/data/booking
-      - ./config/docker/backend.toml:/app/config/backend.toml:ro
-
   api:
     <<: *backend
     restart: unless-stopped
@@ -87,16 +80,12 @@ services:
       OPENTALK_WORKER_HEALTH_HOST: 0.0.0.0
       OPENTALK_WORKER_IDLE_PROCESSES: "1"
     volumes:
-      - booking-data:/app/data/booking
       - session-data:/app/data/sessions
       - telemetry-data:/app/logs
-      - ./config/docker/backend.toml:/app/config/backend.toml:ro
     depends_on:
       livekit:
         condition: service_healthy
         restart: true
-      booking-init:
-        condition: service_completed_successfully
     stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081', timeout=3)"]
@@ -113,7 +102,7 @@ services:
     logging: *logging
     environment:
       OPENTALK_API_URL: http://api:8080
-      OPENTALK_AGENT: ${OPENTALK_AGENT:-booking}
+      OPENTALK_AGENT: ${OPENTALK_AGENT:-conversation}
     ports:
       - "127.0.0.1:${OPENTALK_FRONTEND_PORT:-3000}:3000"
     depends_on:
@@ -137,6 +126,5 @@ services:
     logging: *logging
 
 volumes:
-  booking-data:
   session-data:
   telemetry-data:

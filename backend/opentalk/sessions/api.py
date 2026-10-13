@@ -100,7 +100,7 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("An object is required.")
-        agent_key = body.get("agent", "booking")
+        agent_key = body.get("agent", "conversation")
         voice_enabled = body.get("voice_enabled", True)
         if type(voice_enabled) is not bool:
             raise ValueError("voice_enabled must be a boolean.")

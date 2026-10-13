@@ -15,7 +15,7 @@ async def run_smoke() -> dict:
     context.add_message(role="system", content="Answer concisely in English.")
     context.add_message(
         role="user",
-        content="Explain in two short sentences why meeting rooms need reservations.",
+        content="Explain in two short sentences how a voice assistant works.",
     )
     chunks = []
     usage = None

@@ -39,7 +39,7 @@ async def entrypoint(context: JobContext):
                                     lease_seconds=session_config.lease_seconds,
                                     pending_seconds=session_config.token_ttl_seconds)
     reservation = None
-    agent_key = "booking"
+    agent_key = "conversation"
     voice_enabled = True
     if context.job.metadata:
         metadata = json.loads(context.job.metadata)

@@ -15,10 +15,10 @@ Optional server-only settings in `frontend/.env.local`:
 
 ```dotenv
 OPENTALK_API_URL=http://127.0.0.1:8080
-OPENTALK_AGENT=booking
+OPENTALK_AGENT=conversation
 ```
 
-The browser receives only short-lived room tokens. LiveKit API secrets and model credentials belong in the repository-root `.env.local`, never in this directory or `NEXT_PUBLIC_*` variables. The proxy reads the backend address on the server and disables response caching. Resuming uses the persisted session's agent key; the UI has no booking controls.
+The browser receives only short-lived room tokens. LiveKit API secrets and model credentials belong in the repository-root `.env.local`, never in this directory or `NEXT_PUBLIC_*` variables. The proxy reads the backend address on the server and disables response caching. Resuming uses the persisted session's agent key; the UI uses the generic conversation agent.
 
 Recent sessions and Services are collapsible header panels and adapt to narrow screens. Type a message and press Enter to send (Shift+Enter adds a line), or use the waveform icon to start voice mode. Cancel voice closes the microphone and stops backend TTS while keeping the same session connected in text mode. Text mode streams LLM output directly, without audio synthesis or playback pacing. Audio mode uses the native `opentalk.set_voice_mode` RPC, restricted to the linked participant, alongside the native `lk.chat` stream for text input. Canceling an active voice reply preserves the original LLM generation and tool executions.
 

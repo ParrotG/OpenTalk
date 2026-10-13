@@ -12,7 +12,7 @@ const test = base.extend({
   },
 });
 
-test('container dispatch, SQL tools, media, automatic resume and SQLite persistence', async ({
+test('container dispatch, media, automatic resume and SQLite persistence', async ({
   page,
   request,
 }) => {
@@ -37,7 +37,7 @@ test('container dispatch, SQL tools, media, automatic resume and SQLite persiste
   await page.goto('/');
   const input = page.getByRole('textbox', { name: 'Message', exact: true });
   await expect(input).toBeEnabled();
-  await input.fill('List resources');
+  await input.fill('Hello');
   await input.press('Enter');
   await expect(page.locator('.message.assistant').last()).toContainText(
     'I checked the request. Please review the result.',
@@ -50,18 +50,10 @@ test('container dispatch, SQL tools, media, automatic resume and SQLite persiste
   const first = await snapshot();
   const history = async () =>
     (await (await request.get(`/api/control/sessions/${id}/history`)).json()).items;
-  await expect
-    .poll(
-      async () =>
-        (await history()).filter((item: { type: string }) => item.type === 'function_call').length,
-    )
-    .toBe(1);
-  const calls = (await history()).filter((item: { type: string }) => item.type === 'function_call');
-  expect(calls[0].name).toBe('query');
   await page.goto('about:blank');
   await expect.poll(async () => (await snapshot()).status, { timeout: 20000 }).toBe('completed');
   await page.goto('/');
-  await expect(page.locator('.message.user')).toContainText('List resources');
+  await expect(page.locator('.message.user')).toContainText('Hello');
   await input.fill('Continue automatically');
   await input.press('Enter');
   await expect
@@ -107,6 +99,6 @@ test('container dispatch, SQL tools, media, automatic resume and SQLite persiste
   await expect.poll(async () => (await snapshot()).status, { timeout: 20000 }).toBe('completed');
   expect(
     (await history()).filter((item: { type: string }) => item.type === 'function_call'),
-  ).toHaveLength(1);
+  ).toHaveLength(0);
   expect(errors).toEqual([]);
 });

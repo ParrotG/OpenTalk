@@ -3,7 +3,6 @@
 import asyncio
 import json
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -11,18 +10,9 @@ from livekit.agents import llm
 from livekit.plugins import openai as livekit_openai
 from openai import AsyncOpenAI
 
-from opentalk.domain.booking_service import BookingService
 from opentalk.llm import provider
-from opentalk.storage.repository import BookingRepository
-from opentalk.voice.factories import agent_factory
 from opentalk.voice.session import open_session
-
-
-def service_and_slot(tmp_path):
-    service = BookingService(BookingRepository(tmp_path / "tools.sqlite3"),
-                             clock=lambda: datetime(2030, 1, 1, tzinfo=UTC))
-    start = datetime(2030, 1, 2, 1, tzinfo=UTC)
-    return service, service.seed_slot("Room A", start, start + timedelta(hours=1))
+from voice_fakes import tool_factory
 
 
 def test_provider_configuration_and_environment_precedence(monkeypatch, tmp_path):
@@ -66,7 +56,7 @@ def test_llm_config_rejects_protocol_override(tmp_path):
 
 def test_fragmented_tool_stream_and_role_transcript(tmp_path):
     async def scenario():
-        service, slot = service_and_slot(tmp_path)
+        calls = []
         config = provider.load_llm_config()
         requests = []
 
@@ -83,16 +73,16 @@ def test_fragmented_tool_stream_and_role_transcript(tmp_path):
             if len(requests) == 1:
                 assert body["tools"]
                 events = [
-                    chunk({"tool_calls": [{"index": 0, "id": "call-slots", "type": "function",
-                                          "function": {"name": "query", "arguments": '{"sql":'}}]}),
-                    chunk({"tool_calls": [{"index": 0, "function": {"arguments": '"SELECT name FROM resources"}'}}]}),
+                    chunk({"tool_calls": [{"index": 0, "id": "call-echo", "type": "function",
+                                          "function": {"name": "echo", "arguments": '{"text":'}}]}),
+                    chunk({"tool_calls": [{"index": 0, "function": {"arguments": '"hello"}'}}]}),
                     chunk({}, "tool_calls"),
                 ]
             else:
                 messages = body["messages"]
-                assert any(message["role"] == "tool" and message["tool_call_id"] == "call-slots"
+                assert any(message["role"] == "tool" and message["tool_call_id"] == "call-echo"
                            for message in messages)
-                events = [chunk({"content": "One slot "}), chunk({"content": "is available."}),
+                events = [chunk({"content": "Echo response "}), chunk({"content": "is ready."}),
                           chunk({}, "stop")]
             data = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
             return httpx.Response(200, text=data + "data: [DONE]\n\n",
@@ -101,17 +91,18 @@ def test_fragmented_tool_stream_and_role_transcript(tmp_path):
         async with AsyncOpenAI(api_key="offline-test-key", base_url="https://offline.invalid",
                                http_client=httpx.AsyncClient(transport=httpx.MockTransport(transport))) as client:
             async with livekit_openai.LLM(model=config.model, client=client) as model:
-                async with open_session(text_only=True, factory=agent_factory(service=service),
+                async with open_session(text_only=True, factory=tool_factory(calls),
                                         model=model) as (session, agent, journal):
                     await session.start(agent=agent)
-                    await session.run(user_input="Find slots on 2030-01-02.")
-                    assert session.history.items[-1].text_content == "One slot is available."
+                    await session.run(user_input="Echo hello.")
+                    assert session.history.items[-1].text_content == "Echo response is ready."
                     await journal.save()
                     await journal.save()
                     history = journal.store.history(session.userdata.session_id)["items"]
-                    calls = [item for item in history if item["type"] == "function_call"]
-                    assert len(calls) == 1 and calls[0]["name"] == "query"
-                    assert json.loads(calls[0]["arguments"]) == {"sql": "SELECT name FROM resources"}
+                    assert calls == ["hello"]
+                    stored_calls = [item for item in history if item["type"] == "function_call"]
+                    assert len(stored_calls) == 1 and stored_calls[0]["name"] == "echo"
+                    assert json.loads(stored_calls[0]["arguments"]) == {"text": "hello"}
                     roles = [item["role"] for item in history if item["type"] == "message"]
                     assert roles == ["user", "assistant"]
                     assert "offline-test-key" not in json.dumps(history)

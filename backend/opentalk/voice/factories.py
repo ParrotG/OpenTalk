@@ -1,32 +1,12 @@
-"""Agent composition adapters; session infrastructure never imports business storage."""
-
-import asyncio
+"""Agent composition boundary for replaceable business capabilities."""
 
 from opentalk.agents.base import ConversationAgent
 
 
-def agent_factory(agent_key="booking", *, backend_config=None, service=None):
-    if agent_key == "conversation":
-        async def conversation(**options):
-            return ConversationAgent(instructions="You are a helpful conversational assistant.", **options)
-        return conversation
-    if agent_key != "booking":
-        raise ValueError("Unknown agent type. Use booking or conversation.")
+def agent_factory(agent_key="conversation"):
+    if agent_key != "conversation":
+        raise ValueError("Unknown agent type. Use conversation.")
 
-    async def booking(**options):
-        # Business dependencies are isolated to this replaceable adapter.
-        from opentalk.config import load_config
-        from opentalk.domain.booking_service import BookingService
-        from opentalk.storage.repository import BookingRepository
-        from opentalk.tools.database_tools import DatabaseTools
-        from opentalk.voice.agent import BookingAgent
-
-        config = backend_config or load_config()
-        booking_service = service
-        if booking_service is None:
-            booking_service = await asyncio.to_thread(
-                lambda: BookingService(BookingRepository(config.database_path),
-                                       user_id=config.demo_user_id,
-                                       timezone=config.timezone))
-        return BookingAgent(DatabaseTools(booking_service), **options)
-    return booking
+    async def conversation(**options):
+        return ConversationAgent(instructions="You are a helpful conversational assistant.", **options)
+    return conversation

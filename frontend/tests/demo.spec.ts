@@ -74,7 +74,6 @@ test('history displays native messages as plain text and only completed sessions
   await page.getByRole('button', { name: /failed-sessi/ }).click();
   await expect(page.getByRole('button', { name: 'Resume session' })).toHaveCount(0);
   await expect(page.locator('.archive-notice')).toContainText('cannot be resumed');
-  await expect(page.getByText(/Booking|Reservation/)).toHaveCount(0);
 });
 
 test('unavailable dependencies prevent voice allocation and are shown clearly', async ({

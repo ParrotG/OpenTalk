@@ -62,7 +62,7 @@ def test_concurrent_reserve_and_claim_have_one_owner(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(claim, ["a", "b"])) == [False, True]
     with pytest.raises(SessionError, match="different request"):
-        store.reserve(request_id="same", agent_key="conversation")
+        store.reserve(request_id="same", mode="room")
 
 
 def test_failed_cancelled_and_expired_sessions_are_not_resumable(tmp_path):

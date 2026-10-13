@@ -29,7 +29,7 @@
 从仓库根目录运行：
 
 ```bash
-PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke --text "会议室 A 明天上午十点可用。Please confirm the date and time before booking." --output recordings/tts-demo.wav --report logs/tts-demo.json
+PYTHONPATH=backend uv run --locked python -m opentalk.tts.smoke --text "你好，欢迎使用 OpenTalk。How can I help you today?" --output recordings/tts-demo.wav --report logs/tts-demo.json
 ```
 
 也可以使用自己的 UTF-8 文本文件：
