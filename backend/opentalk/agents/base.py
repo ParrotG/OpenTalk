@@ -43,8 +43,9 @@ class ConversationAgent(Agent):
         self.audio_mode = None
         super().__init__(chat_ctx=chat_ctx, instructions=instructions + VOICE_INSTRUCTIONS + (
             " Follow the user's language and explicit response language preferences. "
-            "For a difficult task, use escalate_reasoning after briefly telling the user "
-            "you are checking it. Give the tool a self-contained task and relevant facts. "
+            "For a difficult task, use escalate_reasoning. Set its message to a brief progress "
+            "notice in the same language as the response, and do not send a separate preamble. "
+            "Give the tool a self-contained task and relevant facts. "
             "It performs one stronger analysis, then the default model continues. "
             "Do not escalate repeatedly for the same user turn. Use search_documents when "
             "the answer may depend on uploaded documents. Form a standalone search query "
@@ -217,10 +218,11 @@ class ConversationAgent(Agent):
 
     @function_tool()
     async def escalate_reasoning(self, context: RunContext, task: str,
-                                 message: str = "Please wait while I check this more carefully.") -> dict:
+                                 message: str) -> dict:
         """Briefly notify the user and perform one stronger, tool-free analysis.
 
         Supply a self-contained task with relevant query results and constraints.
+        Set message to a short progress notice in the response language.
         The default model resumes after this call. Do not request database edits here.
         """
         if not self._valid(context):

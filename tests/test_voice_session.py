@@ -149,14 +149,21 @@ def test_text_entrypoint_reads_pipe_and_saves(tmp_path, monkeypatch, capsys):
 
 def test_scoped_reasoning_then_default_model_resumes(tmp_path):
     config = replace(load_voice_config(), log_directory=tmp_path / "logs")
-    main = ScriptedLLM({"complex": ("escalate_reasoning", {"task": "Compare the supplied options."})})
+    complex_request = "请比较这两个复杂方案"
+    main = ScriptedLLM({complex_request: ("escalate_reasoning", {
+        "task": "Compare the supplied options.",
+        "message": "请稍等，我会更仔细地分析这个问题。",
+    })}, replies={complex_request: "这是比较结果。"})
     strong = ScriptedLLM()
 
     async def scenario():
         async with open_session(text_only=True, factory=agent_factory(), voice_config=config,
                                 model=main, reasoning_model=strong) as (session, agent, journal):
             await session.start(agent=agent)
-            await asyncio.wait_for(session.run(user_input="complex"), timeout=5)
+            await asyncio.wait_for(session.run(user_input=complex_request), timeout=5)
+            assistant_messages = [item.text_content for item in session.history.items
+                                  if item.type == "message" and item.role == "assistant"]
+            assert "请稍等，我会更仔细地分析这个问题。" in assistant_messages
             await session.run(user_input="simple")
             assert len(strong.requests) == 1 and strong.requests[0]["tools"] == 0
             assert main.requests[-1]["text"] == "simple"
