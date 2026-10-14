@@ -33,9 +33,21 @@ class VectorStoreConfig:
 
 
 @dataclass(frozen=True)
+class RetrievalConfig:
+    candidate_limit: int
+    default_limit: int
+    max_limit: int
+    max_query_chars: int
+    max_context_chars: int
+    max_images: int
+    max_image_bytes: int
+
+
+@dataclass(frozen=True)
 class RagConfig:
     embedding: EmbeddingConfig
     vector_store: VectorStoreConfig
+    retrieval: RetrievalConfig
 
 
 def load_rag_config(
@@ -51,6 +63,7 @@ def load_rag_config(
             data = tomllib.load(stream)
         embedding = data["embedding"]
         vector_store = data["vector_store"]
+        retrieval = data["retrieval"]
 
         provider = embedding["provider"]
         model = embedding["model"]
@@ -91,6 +104,25 @@ def load_rag_config(
         if not isinstance(api_key_env, str) or not api_key_env:
             raise ValueError("vector_store.api_key_env must be a non-empty string.")
 
+        retrieval_values = {
+            name: retrieval[name]
+            for name in (
+                "candidate_limit",
+                "default_limit",
+                "max_limit",
+                "max_query_chars",
+                "max_context_chars",
+                "max_images",
+                "max_image_bytes",
+            )
+        }
+        if any(type(value) is not int or value <= 0 for value in retrieval_values.values()):
+            raise ValueError("retrieval limits must be positive integers.")
+        if retrieval_values["default_limit"] > retrieval_values["max_limit"]:
+            raise ValueError("retrieval.default_limit must not exceed retrieval.max_limit.")
+        if retrieval_values["candidate_limit"] < retrieval_values["max_limit"]:
+            raise ValueError("retrieval.candidate_limit must be at least retrieval.max_limit.")
+
         return RagConfig(
             embedding=EmbeddingConfig(
                 provider=provider,
@@ -106,6 +138,7 @@ def load_rag_config(
                 upsert_batch_size=upsert_batch_size,
                 api_key_env=api_key_env,
             ),
+            retrieval=RetrievalConfig(**retrieval_values),
         )
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Invalid RAG configuration at {path}: {error}") from error

@@ -5,9 +5,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from opentalk.documents.lexical import SparseVector
 from opentalk.documents.vector_config import VectorStoreConfig
 
 DENSE_VECTOR_NAME = "dense"
+LEXICAL_VECTOR_NAME = "lexical"
 
 
 @dataclass(frozen=True)
@@ -15,6 +17,7 @@ class VectorPoint:
     point_id: str
     vector: list[float]
     payload: dict[str, Any]
+    lexical_vector: SparseVector | None = None
 
 
 @dataclass(frozen=True)
@@ -37,15 +40,36 @@ class VectorStore(Protocol):
 
     def ensure_collection(self, dimension: int) -> None: ...
 
+    def validate_collection(self, dimension: int) -> None: ...
+
     def validate_embedding_space(self, *, profile: str, model: str) -> None: ...
 
     def upsert(self, points: Sequence[VectorPoint]) -> None: ...
 
     def count(self, filters: Mapping[str, str]) -> int: ...
 
+    def hybrid_search(
+        self,
+        dense_vectors: Sequence[Sequence[float]],
+        lexical_vectors: Sequence[SparseVector],
+        *,
+        candidate_limit: int,
+        limit: int,
+        filters: Mapping[str, str] | None = None,
+    ) -> list[VectorSearchHit]: ...
+
+    def fetch_by_node_ids(
+        self,
+        node_ids: Sequence[str],
+        *,
+        filters: Mapping[str, str],
+    ) -> list[VectorSearchHit]: ...
+
+    def close(self) -> None: ...
+
 
 class QdrantVectorStore:
-    """Persist and query named dense vectors in one configured Qdrant collection."""
+    """Persist and query dense and lexical vectors in one Qdrant collection."""
 
     store_type = "qdrant"
 
@@ -90,6 +114,11 @@ class QdrantVectorStore:
                         distance=models.Distance.COSINE,
                     )
                 },
+                sparse_vectors_config={
+                    LEXICAL_VECTOR_NAME: models.SparseVectorParams(
+                        modifier=models.Modifier.IDF,
+                    )
+                },
             )
             for field_name in (
                 "document_id",
@@ -106,6 +135,16 @@ class QdrantVectorStore:
                 )
             return
 
+        self.validate_collection(dimension)
+
+    def validate_collection(self, dimension: int) -> None:
+        """Require an existing collection with the configured hybrid schema."""
+        if dimension <= 0:
+            raise ValueError("The dense vector dimension must be positive.")
+        models = self._models()
+        if not self.client.collection_exists(self.config.collection):
+            raise ValueError(f"Qdrant collection {self.config.collection} does not exist.")
+
         information = self.client.get_collection(self.config.collection)
         vectors = information.config.params.vectors
         if not isinstance(vectors, dict) or DENSE_VECTOR_NAME not in vectors:
@@ -116,6 +155,11 @@ class QdrantVectorStore:
         if dense.size != dimension or dense.distance != models.Distance.COSINE:
             raise ValueError(
                 f"Qdrant collection {self.config.collection} has an incompatible dense schema."
+            )
+        sparse_vectors = information.config.params.sparse_vectors
+        if not isinstance(sparse_vectors, dict) or LEXICAL_VECTOR_NAME not in sparse_vectors:
+            raise ValueError(
+                f"Qdrant collection {self.config.collection} lacks the named lexical vector."
             )
 
     def validate_embedding_space(self, *, profile: str, model: str) -> None:
@@ -144,7 +188,19 @@ class QdrantVectorStore:
                 points=[
                     models.PointStruct(
                         id=point.point_id,
-                        vector={DENSE_VECTOR_NAME: point.vector},
+                        vector={
+                            DENSE_VECTOR_NAME: point.vector,
+                            **(
+                                {
+                                    LEXICAL_VECTOR_NAME: models.SparseVector(
+                                        indices=point.lexical_vector.indices,
+                                        values=point.lexical_vector.values,
+                                    )
+                                }
+                                if point.lexical_vector is not None
+                                else {}
+                            ),
+                        },
                         payload=point.payload,
                     )
                     for point in batch
@@ -187,6 +243,91 @@ class QdrantVectorStore:
                 payload=dict(point.payload or {}),
             )
             for point in result.points
+        ]
+
+    def hybrid_search(
+        self,
+        dense_vectors: Sequence[Sequence[float]],
+        lexical_vectors: Sequence[SparseVector],
+        *,
+        candidate_limit: int,
+        limit: int,
+        filters: Mapping[str, str] | None = None,
+    ) -> list[VectorSearchHit]:
+        """Fuse semantic and lexical candidate rankings with reciprocal rank fusion."""
+        if not dense_vectors:
+            raise ValueError("Hybrid search requires at least one dense query vector.")
+        if candidate_limit <= 0 or limit <= 0:
+            raise ValueError("Hybrid search limits must be positive.")
+        models = self._models()
+        prefetch = [
+            models.Prefetch(
+                query=list(vector),
+                using=DENSE_VECTOR_NAME,
+                limit=candidate_limit,
+            )
+            for vector in dense_vectors
+        ]
+        prefetch.extend(
+            models.Prefetch(
+                query=models.SparseVector(indices=vector.indices, values=vector.values),
+                using=LEXICAL_VECTOR_NAME,
+                limit=candidate_limit,
+            )
+            for vector in lexical_vectors
+            if vector.indices
+        )
+        result = self.client.query_points(
+            collection_name=self.config.collection,
+            prefetch=prefetch,
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            query_filter=self._filter(filters or {}, models),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [
+            VectorSearchHit(
+                point_id=str(point.id),
+                score=float(point.score),
+                payload=dict(point.payload or {}),
+            )
+            for point in result.points
+        ]
+
+    def fetch_by_node_ids(
+        self,
+        node_ids: Sequence[str],
+        *,
+        filters: Mapping[str, str],
+    ) -> list[VectorSearchHit]:
+        if not node_ids:
+            return []
+        models = self._models()
+        conditions = [
+            models.FieldCondition(key=key, match=models.MatchValue(value=value))
+            for key, value in filters.items()
+        ]
+        conditions.append(
+            models.FieldCondition(
+                key="node_id",
+                match=models.MatchAny(any=list(dict.fromkeys(node_ids))),
+            )
+        )
+        records, _ = self.client.scroll(
+            collection_name=self.config.collection,
+            scroll_filter=models.Filter(must=conditions),
+            limit=len(set(node_ids)),
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [
+            VectorSearchHit(
+                point_id=str(point.id),
+                score=0.0,
+                payload=dict(point.payload or {}),
+            )
+            for point in records
         ]
 
     @staticmethod

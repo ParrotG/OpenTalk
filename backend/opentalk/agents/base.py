@@ -1,10 +1,19 @@
 """Generic native LiveKit agent with scoped reasoning and response bookkeeping."""
 
 import asyncio
+import base64
+import logging
+import mimetypes
 from contextlib import aclosing
 from datetime import UTC, datetime
+from pathlib import Path
 
 from livekit.agents import Agent, RunContext, function_tool, llm
+from livekit.agents.llm import ImageContent
+
+from opentalk.documents.retrieval import DocumentRetriever
+
+logger = logging.getLogger(__name__)
 
 VOICE_INSTRUCTIONS = (
     " You are a voice assistant. Respond in natural conversational language suitable "
@@ -17,24 +26,31 @@ VOICE_INSTRUCTIONS = (
 
 class ConversationAgent(Agent):
     def __init__(self, *, instructions, journal, state, chat_ctx=None, context_max_items=120,
-                 reasoning_model=None, reasoning_options=None, clock=None):
+                 reasoning_model=None, reasoning_options=None, retrieval: DocumentRetriever | None = None,
+                 clock=None):
         self.journal = journal
         self.state = state
         self.context_max_items = context_max_items
         self.reasoning_model = reasoning_model
         self.reasoning_options = reasoning_options
+        self.retrieval = retrieval
         self.clock = clock or (lambda: datetime.now(UTC))
         self.turn_id = None
         self._speech_turns = {}
         self._execution_lock = asyncio.Lock()
         self._reasoning_turn = None
+        self._pending_retrieval_images: dict[str, list[ImageContent]] = {}
         self.audio_mode = None
         super().__init__(chat_ctx=chat_ctx, instructions=instructions + VOICE_INSTRUCTIONS + (
             " Follow the user's language and explicit response language preferences. "
             "For a difficult task, use escalate_reasoning after briefly telling the user "
             "you are checking it. Give the tool a self-contained task and relevant facts. "
             "It performs one stronger analysis, then the default model continues. "
-            "Do not escalate repeatedly for the same user turn."
+            "Do not escalate repeatedly for the same user turn. Use search_documents when "
+            "the answer may depend on uploaded documents. Form a standalone search query "
+            "from the user's request and relevant conversation context. Add one alternate "
+            "wording only when it may improve recall. Base document claims on returned "
+            "evidence and mention the document page when available."
         ))
 
     @property
@@ -60,6 +76,11 @@ class ConversationAgent(Agent):
                      if item.type == "message" and item.role == "user"), None)
         if user is not None and user.id != self.turn_id:
             self.turn_id = user.id
+            self._pending_retrieval_images = {
+                key: value
+                for key, value in self._pending_retrieval_images.items()
+                if key == self.turn_id
+            }
             text = (user.text_content or "").strip().casefold().rstrip(".!?。！？")
             preferences = {"请用英语回复": "en", "please reply in english": "en",
                            "请用中文回复": "zh", "please reply in chinese": "zh"}
@@ -75,6 +96,12 @@ class ConversationAgent(Agent):
             self.session.tts.update_options(language=self.preferred_response_language)
         context = chat_ctx.copy()
         context.truncate(max_items=self.context_max_items)
+        images = self._pending_retrieval_images.pop(self.turn_id, [])
+        if images:
+            context.add_message(
+                role="user",
+                content=["Retrieved image evidence from the indexed documents:", *images],
+            )
         context.add_message(role="system", content=(self.runtime_context() +
                             f" Reply language preference: {self.preferred_response_language or 'follow the user'}."))
         async for chunk in Agent.default.llm_node(self, context, tools, model_settings):
@@ -103,6 +130,90 @@ class ConversationAgent(Agent):
             # Retain the result of any database transaction that has already started.
             await asyncio.shield(task)
             raise
+
+    @staticmethod
+    def _load_images(paths: list[Path], *, maximum: int, max_bytes: int) -> list[ImageContent]:
+        images: list[ImageContent] = []
+        for path in paths[:maximum]:
+            size = path.stat().st_size
+            mime_type = mimetypes.guess_type(path.name)[0]
+            if size <= 0 or size > max_bytes or mime_type not in {
+                "image/gif",
+                "image/jpeg",
+                "image/png",
+                "image/webp",
+            }:
+                continue
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            images.append(
+                ImageContent(
+                    image=f"data:{mime_type};base64,{encoded}",
+                    mime_type=mime_type,
+                    inference_detail="auto",
+                )
+            )
+        return images
+
+    @function_tool()
+    async def search_documents(
+        self,
+        context: RunContext,
+        query: str,
+        alternate_query: str = "",
+        document_id: str = "",
+        max_results: int = 6,
+        include_images: bool = False,
+    ) -> dict:
+        """Search globally indexed PDFs and return grounded, page-located evidence.
+
+        Write query as a standalone question. alternate_query may contain one useful
+        paraphrase or exact-term variant. Set document_id only when the user selected a
+        specific document. Set include_images only when visual inspection is necessary;
+        descriptions, tables, and formulas are already returned as text.
+        """
+        if self.retrieval is None:
+            return {
+                "ok": False,
+                "error": "retrieval_unavailable",
+                "message": "Document retrieval is unavailable.",
+            }
+        request_turn = self._speech_turns.get(context.speech_handle.id)
+
+        async def work() -> dict:
+            try:
+                response = await asyncio.to_thread(
+                    self.retrieval.search,
+                    query,
+                    alternate_query=alternate_query or None,
+                    document_id=document_id or None,
+                    limit=max_results,
+                )
+                attached = 0
+                if include_images:
+                    images = await asyncio.to_thread(
+                        self._load_images,
+                        response.image_paths(),
+                        maximum=self.retrieval.config.max_images,
+                        max_bytes=self.retrieval.config.max_image_bytes,
+                    )
+                    if images and request_turn is not None:
+                        self._pending_retrieval_images[request_turn] = images
+                        attached = len(images)
+                result = response.to_dict()
+                result["images_attached"] = attached
+                return result
+            except Exception as error:
+                logger.exception(
+                    "Document retrieval failed.",
+                    extra={"error_type": type(error).__name__},
+                )
+                return {
+                    "ok": False,
+                    "error": "retrieval_failed",
+                    "message": "Document retrieval failed. Check the RAG service diagnostics.",
+                }
+
+        return await self.execute(context, "search_documents", work)
 
     @function_tool()
     async def escalate_reasoning(self, context: RunContext, task: str,
@@ -150,3 +261,10 @@ class ConversationAgent(Agent):
             return {"ok": True, "analysis": "".join(parts)}
         finally:
             self.journal.record("reasoning_finished", turn_id=turn, active_profile="default")
+
+    async def on_exit(self) -> None:
+        try:
+            if self.retrieval is not None:
+                await asyncio.to_thread(self.retrieval.close)
+        finally:
+            await super().on_exit()

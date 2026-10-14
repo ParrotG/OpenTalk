@@ -28,7 +28,7 @@ ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHOND
 USER app
 ENTRYPOINT ["python", "-m", "opentalk.documents.parse"]
 
-# Embedding and vector indexing are offline tools and do not enter the realtime image.
+# Embedding and vector indexing use the same retrieval dependencies as the agent runtime.
 FROM dependencies AS document-indexer
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --group rag
 RUN useradd --uid 10001 --create-home app \

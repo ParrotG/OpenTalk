@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from opentalk.documents.embedding import EmbeddingProvider, validate_vectors
+from opentalk.documents.lexical import encode_lexical
 from opentalk.documents.vector_store import VectorPoint, VectorStore
 
 
@@ -197,6 +198,7 @@ def index_prepared_nodes(
             "type": store.store_type,
             "collection": store.collection_name,
             "vector_name": "dense",
+            "lexical_vector_name": "lexical",
         },
         "source": {"index_manifest": "../../index_manifest.json", "nodes": "../../nodes.jsonl"},
     }
@@ -221,6 +223,7 @@ def index_prepared_nodes(
             for node, vector in zip(batch, vectors, strict=True):
                 parent_id = node.get("parent_id")
                 parent = nodes_by_id.get(parent_id) if isinstance(parent_id, str) else None
+                lexical_vector = encode_lexical(node.get("sparse_text", ""))
                 points.append(
                     VectorPoint(
                         point_id=_point_id(
@@ -231,6 +234,7 @@ def index_prepared_nodes(
                             node["node_id"],
                         ),
                         vector=vector,
+                        lexical_vector=lexical_vector if lexical_vector.indices else None,
                         payload=_payload(
                             node,
                             parent=parent,

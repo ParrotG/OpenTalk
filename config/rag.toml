@@ -7,7 +7,16 @@ max_input_tokens = 512
 
 [vector_store]
 url = "http://127.0.0.1:6333"
-collection = "opentalk_documents_multilingual_mpnet_v1"
+collection = "opentalk_documents_multilingual_mpnet_hybrid_v1"
 timeout_seconds = 30.0
 upsert_batch_size = 64
 api_key_env = "QDRANT_API_KEY"
+
+[retrieval]
+candidate_limit = 30
+default_limit = 6
+max_limit = 10
+max_query_chars = 1200
+max_context_chars = 6000
+max_images = 2
+max_image_bytes = 8388608

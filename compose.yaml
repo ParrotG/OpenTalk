@@ -79,9 +79,12 @@ services:
       LIVEKIT_URL: ws://livekit:${OPENTALK_LIVEKIT_PORT:-7880}
       OPENTALK_WORKER_HEALTH_HOST: 0.0.0.0
       OPENTALK_WORKER_IDLE_PROCESSES: "1"
+      OPENTALK_QDRANT_URL: http://qdrant:6333
     volumes:
       - session-data:/app/data/sessions
       - telemetry-data:/app/logs
+      - ${OPENTALK_DOCUMENTS_DIR:-./data/documents}:/app/data/documents:ro
+      - embedding-model-cache:/home/app/.cache
     depends_on:
       livekit:
         condition: service_healthy

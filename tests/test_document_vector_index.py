@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from opentalk.documents.embedding import FastEmbedProvider, validate_vectors
+from opentalk.documents.lexical import encode_lexical
 from opentalk.documents.vector_config import (
     EmbeddingConfig,
     VectorStoreConfig,
@@ -175,11 +176,25 @@ def test_vector_index_upserts_only_indexable_nodes_and_preserves_retrieval_paylo
     assert picture.payload["asset_references"][0]["visual"] == "visuals/picture.png"
     assert picture.payload["page_numbers"] == [2]
     assert picture.payload["sparse_text"] == "Overview\nArchitecture diagram."
+    hybrid_hits = store.hybrid_search(
+        [provider.embed_query("diagram")],
+        [encode_lexical("diagram")],
+        candidate_limit=10,
+        limit=2,
+        filters={"document_id": "document-1", "embedding_profile": "fake-v1"},
+    )
+    assert hybrid_hits[0].payload["node_id"] == "picture"
+    fetched = store.fetch_by_node_ids(
+        ["picture"],
+        filters={"document_id": "document-1", "embedding_profile": "fake-v1"},
+    )
+    assert [item.payload["node_id"] for item in fetched] == ["picture"]
 
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "completed"
     assert manifest["point_count"] == 2
     assert manifest["vector_store"]["collection"] == "documents_test"
+    assert manifest["vector_store"]["lexical_vector_name"] == "lexical"
     store.close()
 
 
@@ -193,6 +208,23 @@ def test_qdrant_store_rejects_an_incompatible_collection_schema():
 
     with pytest.raises(ValueError, match="incompatible dense schema"):
         store.ensure_collection(2)
+    store.close()
+
+
+def test_qdrant_store_rejects_a_dense_only_collection():
+    from qdrant_client import QdrantClient, models
+
+    client = QdrantClient(":memory:")
+    client.create_collection(
+        collection_name="dense_only",
+        vectors_config={
+            "dense": models.VectorParams(size=3, distance=models.Distance.COSINE)
+        },
+    )
+    store = QdrantVectorStore(store_configuration("dense_only"), client=client)
+
+    with pytest.raises(ValueError, match="lacks the named lexical vector"):
+        store.ensure_collection(3)
     store.close()
 
 
@@ -295,6 +327,15 @@ collection = "fixture_collection"
 timeout_seconds = 4.0
 upsert_batch_size = 16
 api_key_env = "QDRANT_API_KEY"
+
+[retrieval]
+candidate_limit = 20
+default_limit = 5
+max_limit = 10
+max_query_chars = 1000
+max_context_chars = 5000
+max_images = 2
+max_image_bytes = 8388608
 """,
         encoding="utf-8",
     )
@@ -307,6 +348,7 @@ api_key_env = "QDRANT_API_KEY"
     assert config.embedding.profile == "fixture-v1"
     assert config.vector_store.url == "http://qdrant:6333"
     assert config.vector_store.upsert_batch_size == 16
+    assert config.retrieval.default_limit == 5
 
     path.write_text(
         path.read_text(encoding="utf-8").replace("batch_size = 8", "batch_size = 0"),

@@ -23,7 +23,10 @@ def test_language_preference_survives_mixed_input(tmp_path):
     async def scenario():
         async with open_session(text_only=True, factory=agent_factory(), voice_config=config, model=ScriptedLLM()) as (session, agent, journal):
             assert isinstance(agent, ConversationAgent)
-            assert {tool.info.name for tool in find_function_tools(type(agent))} == {"escalate_reasoning"}
+            assert {tool.info.name for tool in find_function_tools(type(agent))} == {
+                "escalate_reasoning",
+                "search_documents",
+            }
             await session.start(agent=agent)
             await session.run(user_input="请用英语回复")
             await session.run(user_input="帮我 explain streaming tomorrow")
