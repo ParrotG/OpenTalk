@@ -138,7 +138,41 @@ services:
       - ${OPENTALK_DOCUMENTS_DIR:-./data/documents}:/app/data/documents
       - document-model-cache:/home/app/.cache
 
+  qdrant:
+    profiles: [rag]
+    image: qdrant/qdrant:v1.19.2
+    restart: unless-stopped
+    logging: *logging
+    ports:
+      - "127.0.0.1:${OPENTALK_QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ': > /dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  document-indexer:
+    profiles: [rag]
+    image: opentalk-document-indexer:local
+    build:
+      context: .
+      target: document-indexer
+    init: true
+    logging: *logging
+    environment:
+      OPENTALK_QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ${OPENTALK_DOCUMENTS_DIR:-./data/documents}:/app/data/documents
+      - embedding-model-cache:/home/app/.cache
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
 volumes:
   session-data:
   telemetry-data:
   document-model-cache:
+  embedding-model-cache:
+  qdrant-data:

@@ -335,6 +335,11 @@ backend/opentalk/
   documents/parse.py          Manual PDF parsing command-line entry point.
   documents/indexing.py       Hierarchical index preparation without embeddings or a database.
   documents/prepare_index.py  Manual index-preparation command-line entry point.
+  documents/embedding.py      Local embedding provider contract and FastEmbed adapter.
+  documents/vector_store.py   Qdrant schema, idempotent upsert, filtering, and raw search adapter.
+  documents/vector_index.py   Prepared-node embedding, retrieval payload, and run manifest.
+  documents/index_vectors.py  Manual vector-indexing command-line entry point.
+  documents/search_vectors.py Raw dense-search command for stage-level quality checks.
 frontend/
   app/ and components/        LiveKit browser UI and server-side control proxy.
 config/                       Public, non-secret configuration for providers and runtime.
@@ -512,6 +517,7 @@ LiveKit API secrets in `NEXT_PUBLIC_*` variables or the frontend environment.
 | `config/voice.toml` | LiveKit URL, agent name, VAD parameters, endpointing, and interruption duration. |
 | `config/sessions.toml` | Session/telemetry database paths, heartbeat/lease limits, context size, API host/port, token TTL, and tracing switch. |
 | `config/documents.toml` | Global PDF storage, parsing limits, image export, table mode, and Docling enrichment switches. |
+| `config/rag.toml` | Embedding model/profile, token and batch limits, Qdrant endpoint, collection, and write batch size. |
 | `config/livekit-local.yaml` | Local LiveKit development server configuration for same-machine browser testing. |
 | `config/docker/` | Container-specific overrides for backend and session paths. |
 
@@ -520,9 +526,9 @@ directory.
 
 ### 7.4 Parse a PDF for inspection
 
-PDF parsing is currently an independent backend command. It stores the original PDF globally by
-content hash and writes every parse into a separate immutable version directory. It does not create
-embeddings or expose retrieval to the conversation agent yet.
+PDF parsing is an independent backend command. It stores the original PDF globally by content hash
+and writes every parse into a separate immutable version directory. Parsing does not create
+embeddings or expose retrieval to the conversation agent.
 
 Install the optional parser dependency group without removing unrelated packages from an existing
 environment:
@@ -593,7 +599,59 @@ sample text, section paths, pages and asset references with `document.md`, `elem
 rendered PDF. Character limits are preparation bounds; the embedding stage must also validate the
 chosen model's tokenizer limit.
 
-### 7.6 Start the full local stack
+### 7.6 Embed and persist prepared nodes
+
+The optional `rag` dependency group keeps FastEmbed and Qdrant out of the realtime voice image:
+
+```bash
+uv sync --locked --inexact --group rag
+docker compose --profile rag up -d --wait qdrant
+```
+
+Index one prepared profile. The first real run downloads the configured local model, currently
+`sentence-transformers/paraphrase-multilingual-mpnet-base-v2`:
+
+```bash
+INDEX_PATH="$PARSE_PATH/indexing/hierarchical-v2"
+PYTHONPATH=backend uv run --locked --group rag \
+  python -m opentalk.documents.index_vectors "$INDEX_PATH"
+```
+
+Only nodes marked `indexable` are embedded. Token counts are checked against the configured 512
+token model limit before embedding, so oversized content fails instead of being silently truncated.
+Points use stable IDs and can be safely upserted again. Their payloads contain the precise node,
+bounded parent context, neighbor IDs, section metadata, pages, provenance, and referenced picture or
+table assets. The file-side run report is written to
+`vector_indexes/<embedding-profile>/manifest.json`; vector values live only in Qdrant.
+
+Use raw dense search to inspect this stage before implementing Retrieval:
+
+```bash
+PYTHONPATH=backend uv run --locked --group rag \
+  python -m opentalk.documents.search_vectors \
+  "Which component sends requests to the agent?" \
+  --document-id <document-id> --parse-version <parse-version> \
+  --index-profile hierarchical-v2 --limit 10
+```
+
+Inspect result text, parent context, page numbers, scores, and asset references. Evaluate factual,
+paraphrased, Chinese/English cross-language, table, formula, picture-description, and unrelated
+queries as a set. This command performs dense vector search only; hybrid fusion, hierarchy expansion,
+neighbor fallback, reranking, and query transformation belong to the Retrieval stage.
+
+The one-shot container mounts the global document directory and writes to the same Qdrant service:
+
+```bash
+OPENTALK_DOCUMENTS_DIR=/path/to/document-data \
+docker compose --profile rag run --build --rm document-indexer \
+  /app/data/documents/<document-id>/parses/<parse-version>/indexing/hierarchical-v2
+```
+
+Set `OPENTALK_QDRANT_URL` to override the local endpoint. Set the optional `QDRANT_API_KEY`
+environment variable when the configured server requires it. The default local Compose Qdrant binds
+only to loopback and stores data in the `qdrant-data` named volume.
+
+### 7.7 Start the full local stack
 
 Prepare the Python and frontend dependencies once:
 
@@ -628,7 +686,7 @@ LiveKit `7880`, RTC TCP `7881`, RTC UDP `7882`, session API `8080`, worker healt
 
 For a production-style frontend build use `pnpm build && pnpm start` instead of `pnpm dev`.
 
-### 7.6 Docker Compose
+### 7.8 Docker Compose
 
 Configure `.env.local`, then run from the project root:
 
@@ -653,7 +711,7 @@ docker compose --profile test run --build --rm --no-deps backend-tests
 See the Docker guide in `docs/` for port overrides, persistence and
 media-path verification.
 
-### 7.7 Text-only agent
+### 7.9 Text-only agent
 
 The text console does not require LiveKit, ASR, TTS, a microphone, or PortAudio. It uses the same
 agent and tool lifecycle:
@@ -667,7 +725,7 @@ It supports session commands such as `/session`, `/session list`, `/session hist
 resume`, `/session end`, and `/quit`. A model credential is required once a normal message or a
 session resume starts the agent.
 
-### 7.8 Component smoke tests and tests
+### 7.10 Component smoke tests and tests
 
 All commands below run from the project root. The smoke tests call paid provider APIs; the offline
 test suite does not.
@@ -692,7 +750,7 @@ PYTHONPATH=backend uv run --locked pytest -q
 PYTHONPATH=backend uv run --locked pytest tests/test_llm_live.py --live-llm -q
 ```
 
-### 7.9 More documentation
+### 7.11 More documentation
 
 The README is the high-level guide. The `docs/` directory contains detailed validation guides,
 including independent ASR, TTS, session, realtime voice, web, Docker, test procedures.

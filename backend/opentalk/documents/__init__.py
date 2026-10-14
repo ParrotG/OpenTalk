@@ -1,4 +1,4 @@
-"""Global document ingestion and parsing facilities."""
+"""Global document parsing and retrieval-preparation facilities."""
 
 from opentalk.documents.parser import DocumentParseResult, parse_pdf
 

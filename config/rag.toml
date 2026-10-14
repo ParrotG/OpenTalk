@@ -1,0 +1,13 @@
+[embedding]
+provider = "fastembed"
+model = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+profile = "multilingual-mpnet-base-v2-v1"
+batch_size = 32
+max_input_tokens = 512
+
+[vector_store]
+url = "http://127.0.0.1:6333"
+collection = "opentalk_documents_multilingual_mpnet_v1"
+timeout_seconds = 30.0
+upsert_batch_size = 64
+api_key_env = "QDRANT_API_KEY"

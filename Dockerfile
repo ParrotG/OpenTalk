@@ -28,6 +28,18 @@ ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHOND
 USER app
 ENTRYPOINT ["python", "-m", "opentalk.documents.parse"]
 
+# Embedding and vector indexing are offline tools and do not enter the realtime image.
+FROM dependencies AS document-indexer
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --group rag
+RUN useradd --uid 10001 --create-home app \
+    && mkdir -p /app/data/documents \
+    && chown -R app:app /app /home/app
+COPY --chown=app:app backend ./backend
+COPY --chown=app:app config ./config
+ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+USER app
+ENTRYPOINT ["python", "-m", "opentalk.documents.index_vectors"]
+
 FROM python:3.11.14-slim-bookworm AS runtime
 WORKDIR /app
 RUN useradd --uid 10001 --create-home app \

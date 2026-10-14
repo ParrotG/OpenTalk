@@ -12,10 +12,15 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8,<9",
+    "qdrant-client>=1.19,<2",
     "ruff>=0.14,<1",
 ]
 documents = [
     "docling[vlm]>=2.138,<3",
+]
+rag = [
+    "fastembed>=0.9,<1",
+    "qdrant-client>=1.19,<2",
 ]
 
 [tool.uv]
