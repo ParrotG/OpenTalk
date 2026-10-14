@@ -31,10 +31,21 @@ class FakeAnnotation:
 
 
 class FakeItem:
-    def __init__(self, reference, label, *, text=None, parent=None):
+    def __init__(
+        self,
+        reference,
+        label,
+        *,
+        text=None,
+        parent=None,
+        heading_level=None,
+        content_layer="body",
+    ):
         self.self_ref = reference
         self.label = SimpleNamespace(value=label)
         self.text = text
+        self.level = heading_level
+        self.content_layer = SimpleNamespace(value=content_layer)
         self.parent = SimpleNamespace(cref=parent) if parent else None
         self.children = []
         self.meta = FakeMetadata() if label == "picture" else None
@@ -69,7 +80,7 @@ class FakeItem:
 class FakeDocument:
     def __init__(self):
         self.items = [
-            (FakeItem("#/texts/0", "section_header", text="Heading"), 1),
+            (FakeItem("#/texts/0", "section_header", text="Heading", heading_level=1), 1),
             (FakeItem("#/pictures/0", "picture", parent="#/texts/0"), 2),
             (FakeItem("#/tables/0", "table", parent="#/texts/0"), 2),
             (FakeItem("#/texts/1", "formula", text="x^2", parent="#/texts/0"), 2),
@@ -151,6 +162,8 @@ def test_parse_pdf_saves_global_source_and_versioned_non_text_artifacts(tmp_path
         "formula",
     ]
     assert records[1]["metadata"] == {"description": "A described visual."}
+    assert records[0]["heading_level"] == 1
+    assert records[0]["content_layer"] == "body"
     assert records[1]["visual_path"].endswith(".png")
     assert records[2]["table_outputs"] == {
         "csv": "tables/table-0001.csv",

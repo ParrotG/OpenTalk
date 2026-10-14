@@ -24,6 +24,14 @@ class DocumentConfig:
     do_chart_extraction: bool
 
 
+@dataclass(frozen=True)
+class IndexingConfig:
+    profile: str
+    chunk_max_chars: int
+    chunk_overlap_chars: int
+    parent_max_chars: int
+
+
 def load_document_config(path: Path | None = None) -> DocumentConfig:
     """Load public parser settings without resolving model credentials."""
     path = path or PROJECT_ROOT / "config/documents.toml"
@@ -76,3 +84,43 @@ def load_document_config(path: Path | None = None) -> DocumentConfig:
         )
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Invalid document configuration at {path}: {error}") from error
+
+
+def load_indexing_config(path: Path | None = None) -> IndexingConfig:
+    """Load deterministic index-preparation settings."""
+    path = path or PROJECT_ROOT / "config/documents.toml"
+    try:
+        with path.open("rb") as stream:
+            data = tomllib.load(stream)["indexing"]
+
+        profile = data["profile"]
+        chunk_max_chars = data["chunk_max_chars"]
+        chunk_overlap_chars = data["chunk_overlap_chars"]
+        parent_max_chars = data["parent_max_chars"]
+        if not isinstance(profile, str) or not profile or len(profile) > 100:
+            raise ValueError("profile must be a non-empty string of at most 100 characters.")
+        allowed_profile_characters = (
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+        )
+        if any(character not in allowed_profile_characters for character in profile):
+            raise ValueError("profile contains unsupported characters.")
+        if type(chunk_max_chars) is not int or chunk_max_chars <= 0:
+            raise ValueError("chunk_max_chars must be a positive integer.")
+        if (
+            type(chunk_overlap_chars) is not int
+            or chunk_overlap_chars < 0
+            or chunk_overlap_chars >= chunk_max_chars
+        ):
+            raise ValueError(
+                "chunk_overlap_chars must be non-negative and smaller than chunk_max_chars."
+            )
+        if type(parent_max_chars) is not int or parent_max_chars < chunk_max_chars:
+            raise ValueError("parent_max_chars must be an integer at least as large as chunk_max_chars.")
+        return IndexingConfig(
+            profile=profile,
+            chunk_max_chars=chunk_max_chars,
+            chunk_overlap_chars=chunk_overlap_chars,
+            parent_max_chars=parent_max_chars,
+        )
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Invalid indexing configuration at {path}: {error}") from error

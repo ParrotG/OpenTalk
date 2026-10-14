@@ -333,6 +333,8 @@ backend/opentalk/
   sessions/api.py             Control API for allocation, tokens, history, and end requests.
   documents/parser.py         Docling PDF parsing and versioned file artifact export.
   documents/parse.py          Manual PDF parsing command-line entry point.
+  documents/indexing.py       Hierarchical index preparation without embeddings or a database.
+  documents/prepare_index.py  Manual index-preparation command-line entry point.
 frontend/
   app/ and components/        LiveKit browser UI and server-side control proxy.
 config/                       Public, non-secret configuration for providers and runtime.
@@ -554,7 +556,44 @@ docker compose --profile documents run --build --rm document-parser /input/docum
 The input directory is read-only. PDF originals and every parse version are written beneath the
 host output directory. A separate named volume caches downloaded Docling model artifacts.
 
-### 7.5 Start the full local stack
+### 7.5 Prepare hierarchical indexing nodes
+
+Run index preparation against one completed parse directory. This stage uses only local artifacts and
+does not require the optional Docling dependency group:
+
+```bash
+PARSE_PATH=data/documents/<document-id>/parses/<parse-version>
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.prepare_index "$PARSE_PATH"
+```
+
+The output is written to `indexing/<profile>/index_manifest.json` and `nodes.jsonl` beneath that
+parse version. The default `hierarchical-v2` profile creates document and section nodes, bounded
+context parents, indexable text chunks, referenced picture/formula nodes, and table child chunks.
+Use `--profile <new-name>` for another experiment; an existing profile is never overwritten.
+
+Picture retrieval text uses an explicit semantic field list: caption, description, summary,
+keywords, topics, entities, enriched code or molecule text, and chart title. Model/provider names,
+classifier candidates, confidence values, annotation kinds, and generation control tokens are not
+included. Index preparation excludes only elements that Docling labels as furniture, page headers,
+or page footers, together with their structural descendants. It does not infer furniture from page
+position, repetition, image hashes, or picture classification.
+
+Validate structure and preview indexable content before adding embeddings:
+
+```bash
+INDEX_PATH="$PARSE_PATH/indexing/hierarchical-v2"
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.inspect_index \
+  "$INDEX_PATH" --sample-size 20
+```
+
+The command exits unsuccessfully for broken parent/child links, neighbor links, empty indexable
+text, manifest count mismatches, or oversized chunks. Its JSON report separately lists missing asset
+paths and non-text elements that have no searchable description. Content review should compare the
+sample text, section paths, pages and asset references with `document.md`, `elements.jsonl` and the
+rendered PDF. Character limits are preparation bounds; the embedding stage must also validate the
+chosen model's tokenizer limit.
+
+### 7.6 Start the full local stack
 
 Prepare the Python and frontend dependencies once:
 

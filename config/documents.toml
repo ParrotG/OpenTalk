@@ -11,3 +11,9 @@ do_picture_classification = true
 do_formula_enrichment = true
 do_code_enrichment = true
 do_chart_extraction = false
+
+[indexing]
+profile = "hierarchical-v2"
+chunk_max_chars = 1200
+chunk_overlap_chars = 160
+parent_max_chars = 4800

@@ -163,11 +163,14 @@ def _export_elements(document: Any, parse_path: Path) -> tuple[dict[str, int], l
 
         meta = getattr(item, "meta", None)
         annotations = getattr(item, "annotations", None)
+        content_layer = getattr(item, "content_layer", None)
         record = {
             "element_id": reference,
             "type": type(item).__name__,
             "label": label,
             "level": level,
+            "heading_level": getattr(item, "level", None),
+            "content_layer": getattr(content_layer, "value", content_layer),
             "parent_id": _reference(getattr(item, "parent", None)),
             "child_ids": [_reference(child) for child in getattr(item, "children", [])],
             "text": _item_text(item, document),
