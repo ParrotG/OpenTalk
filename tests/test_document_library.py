@@ -256,6 +256,44 @@ def test_document_api_rejects_invalid_and_oversized_uploads(tmp_path):
             assert (await client.post("/documents", data=large)).status == 413
             assert manager.upload is None
 
+            valid = FormData()
+            content = b"%PDF-ok"
+            valid.add_field("file", BytesIO(content), filename="valid.pdf")
+            response = await client.post("/documents", data=valid)
+            assert response.status == 202
+            assert manager.upload["staged_path"].read_bytes() == content
+
+    asyncio.run(scenario())
+
+
+def test_document_api_reports_unwritable_storage_as_json(tmp_path):
+    import asyncio
+
+    async def scenario():
+        manager = FakeDocumentManager()
+        document_config = configuration(tmp_path)
+        document_config.storage_root.mkdir()
+        document_config.storage_root.chmod(0o555)
+        try:
+            app = create_app(
+                configuration=session_settings.load_session_config(),
+                store=SessionStore(tmp_path / "sessions.sqlite3"),
+                document_config=document_config,
+                document_manager=manager,
+            )
+            async with TestClient(TestServer(app)) as client:
+                form = FormData()
+                form.add_field("file", BytesIO(b"%PDF-fixture"), filename="paper.pdf")
+                response = await client.post("/documents", data=form)
+                assert response.status == 503
+                assert await response.json() == {
+                    "error": "document_storage_unavailable",
+                    "message": "Document storage is unavailable. Check the backend data directory.",
+                }
+                assert manager.upload is None
+        finally:
+            document_config.storage_root.chmod(0o755)
+
     asyncio.run(scenario())
 
 

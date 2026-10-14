@@ -83,7 +83,9 @@ export async function uploadDocument(file: File): Promise<{
     data = JSON.parse(raw) as { message?: string; error?: string };
   } catch {
     throw new Error(
-      response.ok ? 'Document upload returned an invalid response.' : 'Document upload failed.',
+      response.ok
+        ? 'Document upload returned an invalid response.'
+        : `Document upload failed (HTTP ${response.status}).`,
     );
   }
   if (!response.ok) throw new Error(data.message || data.error || 'Document upload failed.');

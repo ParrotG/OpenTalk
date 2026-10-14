@@ -48,12 +48,14 @@ FROM python:3.11.14-slim-bookworm AS api-runtime
 WORKDIR /app
 RUN useradd --uid 10001 --create-home app \
     && mkdir -p data/sessions data/documents \
-    && chown -R app:app /app
+    && mkdir -p /home/app/.cache \
+    && chown -R app:app /app /home/app
 COPY --from=api-dependencies /app/.venv ./.venv
 COPY backend ./backend
 COPY config ./config
+COPY --chmod=755 docker/api-entrypoint.sh /usr/local/bin/opentalk-api-entrypoint
 ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
-USER app
+ENTRYPOINT ["opentalk-api-entrypoint"]
 CMD ["python", "-m", "opentalk.sessions.api"]
 
 FROM python:3.11.14-slim-bookworm AS runtime

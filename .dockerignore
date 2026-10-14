@@ -6,6 +6,8 @@
 !backend/**
 !config/
 !config/**
+!docker/
+!docker/**
 !tests/
 !tests/**
 **/__pycache__

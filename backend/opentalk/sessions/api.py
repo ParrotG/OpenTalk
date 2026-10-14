@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -28,6 +29,8 @@ from opentalk.sessions.store import SessionError, SessionStore
 from opentalk.tts.provider import load_tts_config
 from opentalk.voice.config import load_voice_config
 from opentalk.voice.factories import agent_factory
+
+logger = logging.getLogger(__name__)
 
 
 @web.middleware
@@ -230,6 +233,18 @@ def create_app(
         )
 
     async def upload_document(request):
+        staging_root = document_config.storage_root / ".uploads"
+        try:
+            await asyncio.to_thread(staging_root.mkdir, parents=True, exist_ok=True)
+        except OSError:
+            logger.exception("The document upload staging directory could not be created.")
+            return web.json_response(
+                {
+                    "error": "document_storage_unavailable",
+                    "message": "Document storage is unavailable. Check the backend data directory.",
+                },
+                status=503,
+            )
         try:
             reader = await request.multipart()
         except (AssertionError, ValueError):
@@ -244,13 +259,34 @@ def create_app(
                 status=400,
             )
         source_name = _upload_name(field.filename)
-        upload_path = document_config.storage_root / ".uploads" / uuid4().hex / source_name
-        await asyncio.to_thread(upload_path.parent.mkdir, parents=True, exist_ok=False)
+        upload_path = staging_root / uuid4().hex / source_name
+        try:
+            await asyncio.to_thread(upload_path.parent.mkdir, parents=True, exist_ok=False)
+        except OSError:
+            logger.exception("The document upload staging directory could not be created.")
+            return web.json_response(
+                {
+                    "error": "document_storage_unavailable",
+                    "message": "Document storage is unavailable. Check the backend data directory.",
+                },
+                status=503,
+            )
         size = 0
         too_large = False
         signature = bytearray()
         digest = hashlib.sha256()
-        stream = await asyncio.to_thread(upload_path.open, "wb")
+        try:
+            stream = await asyncio.to_thread(upload_path.open, "wb")
+        except OSError:
+            await asyncio.to_thread(shutil.rmtree, upload_path.parent, True)
+            logger.exception("The uploaded document could not be opened for writing.")
+            return web.json_response(
+                {
+                    "error": "document_storage_unavailable",
+                    "message": "Document storage is unavailable. Check the backend data directory.",
+                },
+                status=503,
+            )
         try:
             while chunk := await field.read_chunk(1024 * 1024):
                 size += len(chunk)

@@ -114,6 +114,43 @@ test('document drawer uploads a PDF and shows global processing stages', async (
   await expect(panel).toBeHidden();
 });
 
+test('document drawer accepts another upload after a storage failure', async ({ page }) => {
+  await mockControl(page);
+  let uploadAttempts = 0;
+  await page.route('**/api/control/documents', async (route) => {
+    if (route.request().method() === 'POST' && uploadAttempts++ === 0) {
+      await route.fulfill({
+        status: 503,
+        json: {
+          error: 'document_storage_unavailable',
+          message: 'Document storage is unavailable. Check the backend data directory.',
+        },
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Documents' }).click();
+  const panel = page.getByRole('complementary', { name: 'Documents' });
+  const input = panel.locator('input[type="file"]');
+  await input.setInputFiles({
+    name: 'First.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.7\nfirst'),
+  });
+  await expect(panel.getByRole('alert')).toContainText('Document storage is unavailable');
+  await expect(panel.getByRole('button', { name: 'Upload PDF' })).toBeEnabled();
+
+  await input.setInputFiles({
+    name: 'Second.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.7\nsecond'),
+  });
+  await expect(panel).toContainText('Uploaded.pdf');
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+});
+
 test('history displays native messages as plain text and only completed sessions resume', async ({
   page,
 }) => {
