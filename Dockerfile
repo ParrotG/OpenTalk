@@ -53,21 +53,25 @@ RUN useradd --uid 10001 --create-home app \
 COPY --from=api-dependencies /app/.venv ./.venv
 COPY backend ./backend
 COPY config ./config
-COPY --chmod=755 docker/api-entrypoint.sh /usr/local/bin/opentalk-api-entrypoint
+COPY --chmod=755 docker/backend-entrypoint.sh /usr/local/bin/opentalk-backend-entrypoint
 ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     HOME=/home/app XDG_CACHE_HOME=/home/app/.cache XDG_CONFIG_HOME=/home/app/.config \
-    XDG_DATA_HOME=/home/app/.local/share
-ENTRYPOINT ["opentalk-api-entrypoint"]
+    XDG_DATA_HOME=/home/app/.local/share OPENTALK_DOCUMENTS_ACCESS=write
+ENTRYPOINT ["opentalk-backend-entrypoint"]
 CMD ["python", "-m", "opentalk.sessions.api"]
 
 FROM python:3.11.14-slim-bookworm AS runtime
 WORKDIR /app
 RUN useradd --uid 10001 --create-home app \
-    && mkdir -p data/sessions logs \
-    && chown -R app:app /app
+    && mkdir -p data/sessions data/documents logs \
+    && mkdir -p /home/app/.cache /home/app/.config /home/app/.local/share \
+    && chown -R app:app /app /home/app
 COPY --from=dependencies /app/.venv ./.venv
 COPY backend ./backend
 COPY config ./config
-ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
-USER app
+COPY --chmod=755 docker/backend-entrypoint.sh /usr/local/bin/opentalk-backend-entrypoint
+ENV PYTHONPATH=/app/backend PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/home/app XDG_CACHE_HOME=/home/app/.cache XDG_CONFIG_HOME=/home/app/.config \
+    XDG_DATA_HOME=/home/app/.local/share OPENTALK_DOCUMENTS_ACCESS=read
+ENTRYPOINT ["opentalk-backend-entrypoint"]
 CMD ["python", "-m", "opentalk.voice.worker", "start", "--log-level", "info", "--drain-timeout", "15"]
