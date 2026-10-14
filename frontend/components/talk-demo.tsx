@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, ChevronDown, History, Plus, RefreshCw, X } from 'lucide-react';
+import { Activity, ChevronDown, Files, History, Plus, RefreshCw, X } from 'lucide-react';
 import { Composer } from '@/components/composer';
+import { DocumentPanel } from '@/components/document-panel';
 import { LiveConversation, type ConversationHandle } from '@/components/live-conversation';
 import {
   Allocation,
@@ -64,6 +65,7 @@ export function TalkDemo() {
   const [restoring, setRestoring] = useState(true);
   const restored = useRef(false);
   const [error, setError] = useState('');
+  const [documentsOpen, setDocumentsOpen] = useState(false);
   const busyRef = useRef(false);
   const selectionVersion = useRef(0);
   const pendingRequest = useRef<{ resume?: string; id: string } | null>(null);
@@ -298,11 +300,22 @@ export function TalkDemo() {
   return (
     <main className="shell">
       <header className="header" ref={header}>
-        {/* A full page reload checkpoints and reconnects the active conversation. */}
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-        <a href="/" className="brand">
-          OpenTalk
-        </a>
+        <div className="brand-actions">
+          {/* A full page reload checkpoints and reconnects the active conversation. */}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a href="/" className="brand">
+            OpenTalk
+          </a>
+          <button
+            className={`toolbar-button ${documentsOpen ? 'selected' : ''}`}
+            aria-label="Documents"
+            aria-expanded={documentsOpen}
+            onClick={() => setDocumentsOpen((open) => !open)}
+          >
+            <Files size={18} aria-hidden="true" />
+            <span className="toolbar-label">Documents</span>
+          </button>
+        </div>
         <div className="header-actions">
           <button
             className="toolbar-button"
@@ -396,53 +409,62 @@ export function TalkDemo() {
           </details>
         </div>
       </header>
-      {error && (
-        <div className="error" role="alert">
-          {error}
-          <button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}>
-            <X size={18} aria-hidden="true" />
-          </button>
-        </div>
-      )}
-      {archived && (
-        <p className="archive-notice">
-          {selected.status === 'failed'
-            ? 'This session ended unexpectedly and cannot be resumed. Start a new chat to continue.'
-            : selected.end_requested
-              ? 'This conversation is still being saved. It will be available shortly.'
-              : 'This conversation is active in another connection. Start a new chat to continue.'}
-        </p>
-      )}
-      <Transcript messages={messages} />
-      <div className="composer-dock">
-        {allocation ? (
-          <LiveConversation
-            key={allocation.session.attempt_id}
-            ref={live}
-            allocation={allocation}
-            previous={messages}
-            initialVoice={initialVoice}
-            initialText={initialText}
-            draft={draft}
-            onDraft={setDraft}
-            onMessages={setMessages}
-            onStatus={setSelected}
-            onFinish={finish}
-          />
-        ) : (
-          <Composer
-            draft={draft}
-            onDraft={setDraft}
-            onSend={() => void start(false, draft.trim())}
-            onVoice={() => void start(true)}
-            disabled={busy || restoring || !ready || archived}
-          />
-        )}
-        {!allocation && (busy || restoring) && (
-          <p className="composer-status" role="status">
-            {restoring ? 'Loading conversation…' : 'Preparing conversation…'}
-          </p>
-        )}
+      <div className="workspace">
+        <DocumentPanel open={documentsOpen} onClose={() => setDocumentsOpen(false)} />
+        <section className="conversation" aria-label="Conversation">
+          {error && (
+            <div className="error" role="alert">
+              {error}
+              <button
+                className="icon-button"
+                aria-label="Dismiss error"
+                onClick={() => setError('')}
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+          {archived && (
+            <p className="archive-notice">
+              {selected.status === 'failed'
+                ? 'This session ended unexpectedly and cannot be resumed. Start a new chat to continue.'
+                : selected.end_requested
+                  ? 'This conversation is still being saved. It will be available shortly.'
+                  : 'This conversation is active in another connection. Start a new chat to continue.'}
+            </p>
+          )}
+          <Transcript messages={messages} />
+          <div className="composer-dock">
+            {allocation ? (
+              <LiveConversation
+                key={allocation.session.attempt_id}
+                ref={live}
+                allocation={allocation}
+                previous={messages}
+                initialVoice={initialVoice}
+                initialText={initialText}
+                draft={draft}
+                onDraft={setDraft}
+                onMessages={setMessages}
+                onStatus={setSelected}
+                onFinish={finish}
+              />
+            ) : (
+              <Composer
+                draft={draft}
+                onDraft={setDraft}
+                onSend={() => void start(false, draft.trim())}
+                onVoice={() => void start(true)}
+                disabled={busy || restoring || !ready || archived}
+              />
+            )}
+            {!allocation && (busy || restoring) && (
+              <p className="composer-status" role="status">
+                {restoring ? 'Loading conversation…' : 'Preparing conversation…'}
+              </p>
+            )}
+          </div>
+        </section>
       </div>
     </main>
   );

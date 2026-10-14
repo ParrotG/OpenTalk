@@ -2,10 +2,15 @@
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
+import re
+import shutil
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import unquote
+from uuid import uuid4
 
 from aiohttp import ClientSession, ClientTimeout, web
 from dotenv import load_dotenv
@@ -15,6 +20,8 @@ from livekit.protocol.room import RoomConfiguration
 
 from opentalk.asr.provider import load_asr_config
 from opentalk.config import PROJECT_ROOT
+from opentalk.documents.config import DocumentConfig, load_document_config
+from opentalk.documents.library import DocumentManager, DocumentProcessManager
 from opentalk.llm.provider import load_llm_config
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionError, SessionStore
@@ -27,6 +34,11 @@ from opentalk.voice.factories import agent_factory
 async def errors(request, handler):
     try:
         return await handler(request)
+    except web.HTTPRequestEntityTooLarge:
+        return web.json_response(
+            {"error": "request_too_large", "message": "The request is too large."},
+            status=413,
+        )
     except SessionError as error:
         return web.json_response({"error": error.code, "message": str(error)},
                                  status=404 if error.code == "session_not_found" else 409)
@@ -34,7 +46,40 @@ async def errors(request, handler):
         return web.json_response({"error": "invalid_request", "message": "Invalid request parameters."}, status=400)
 
 
-def create_app(*, configuration=None, store=None, livekit=None, api_key=None, api_secret=None):
+async def _json_body(request: web.Request) -> object:
+    """Keep JSON control requests bounded while the upload route accepts larger bodies."""
+    maximum = 16384
+    if request.content_length is not None and request.content_length > maximum:
+        raise web.HTTPRequestEntityTooLarge(max_size=maximum, actual_size=request.content_length)
+    chunks = []
+    size = 0
+    while chunk := await request.content.read(min(8192, maximum + 1 - size)):
+        chunks.append(chunk)
+        size += len(chunk)
+        if size > maximum:
+            raise web.HTTPRequestEntityTooLarge(max_size=maximum, actual_size=size)
+    return json.loads(b"".join(chunks))
+
+
+def _upload_name(value: str) -> str:
+    """Preserve readable Unicode names while removing path and control characters."""
+    name = Path(unquote(value).replace("\\", "/")).name
+    name = re.sub(r"[\x00-\x1f\x7f]+", "_", name).strip(". ")
+    while len(name.encode("utf-8")) > 180:
+        name = name[:-1]
+    return name or "document.pdf"
+
+
+def create_app(
+    *,
+    configuration=None,
+    store=None,
+    livekit=None,
+    api_key=None,
+    api_secret=None,
+    document_config: DocumentConfig | None = None,
+    document_manager: DocumentManager | None = None,
+):
     configuration = configuration or load_session_config()
     store = store or SessionStore(configuration.database_path, lease_seconds=configuration.lease_seconds,
                                   pending_seconds=configuration.token_ttl_seconds)
@@ -44,7 +89,12 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
     secret = api_secret or os.environ.get("LIVEKIT_API_SECRET", "").strip()
     public_url = os.environ.get("LIVEKIT_PUBLIC_URL", configuration.public_livekit_url)
     internal_url = os.environ.get("LIVEKIT_URL", voice_config.livekit_url)
-    app = web.Application(middlewares=[errors], client_max_size=16384)
+    document_config = document_config or load_document_config()
+    document_manager = document_manager or DocumentProcessManager(document_config)
+    app = web.Application(
+        middlewares=[errors],
+        client_max_size=document_config.max_file_size_bytes + 1024 * 1024,
+    )
 
     async def health(request):
         await asyncio.to_thread(store.list, limit=1)
@@ -97,7 +147,7 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
     async def create(request):
         if not key or not secret:
             return web.json_response({"error": "missing_credentials", "message": "Configure LiveKit API credentials."}, status=503)
-        body = await request.json()
+        body = await _json_body(request)
         if not isinstance(body, dict):
             raise ValueError("An object is required.")
         agent_key = body.get("agent", "conversation")
@@ -154,7 +204,7 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
                 await client.room.delete_room(api.DeleteRoomRequest(room=room_name))
 
     async def end(request):
-        body = await request.json()
+        body = await _json_body(request)
         if not isinstance(body, dict) or not isinstance(body.get("attempt_id"), str):
             raise ValueError("An attempt ID is required.")
         session_id = request.match_info["session_id"]
@@ -170,10 +220,96 @@ def create_app(*, configuration=None, store=None, livekit=None, api_key=None, ap
                 return web.json_response({"session": result, "error": "room_cleanup_failed"}, status=502)
         return web.json_response(result, status=202 if result["status"] == "active" else 200)
 
+    async def documents(request):
+        return web.json_response(
+            {
+                "items": await document_manager.documents(),
+                "max_file_size_bytes": document_config.max_file_size_bytes,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def upload_document(request):
+        try:
+            reader = await request.multipart()
+        except (AssertionError, ValueError):
+            return web.json_response(
+                {"error": "invalid_upload", "message": "A multipart PDF upload is required."},
+                status=400,
+            )
+        field = await reader.next()
+        if field is None or field.name != "file" or not field.filename:
+            return web.json_response(
+                {"error": "invalid_upload", "message": "A PDF file field is required."},
+                status=400,
+            )
+        source_name = _upload_name(field.filename)
+        upload_path = document_config.storage_root / ".uploads" / uuid4().hex / source_name
+        await asyncio.to_thread(upload_path.parent.mkdir, parents=True, exist_ok=False)
+        size = 0
+        too_large = False
+        signature = bytearray()
+        digest = hashlib.sha256()
+        stream = await asyncio.to_thread(upload_path.open, "wb")
+        try:
+            while chunk := await field.read_chunk(1024 * 1024):
+                size += len(chunk)
+                if size > document_config.max_file_size_bytes:
+                    too_large = True
+                    break
+                if len(signature) < 5:
+                    signature.extend(chunk[: 5 - len(signature)])
+                digest.update(chunk)
+                await asyncio.to_thread(stream.write, chunk)
+        finally:
+            await asyncio.to_thread(stream.close)
+        if too_large:
+            await asyncio.to_thread(shutil.rmtree, upload_path.parent, True)
+            return web.json_response(
+                {
+                    "error": "file_too_large",
+                    "message": "The PDF exceeds the configured file size limit.",
+                },
+                status=413,
+            )
+        extra = await reader.next()
+        if extra is not None:
+            await asyncio.to_thread(shutil.rmtree, upload_path.parent, True)
+            return web.json_response(
+                {"error": "invalid_upload", "message": "Upload exactly one PDF file."},
+                status=400,
+            )
+        if size == 0 or bytes(signature) != b"%PDF-":
+            await asyncio.to_thread(shutil.rmtree, upload_path.parent, True)
+            message = "The PDF input is empty." if size == 0 else "The file is not a valid PDF."
+            return web.json_response(
+                {"error": "invalid_pdf", "message": message},
+                status=400,
+            )
+        document_id = digest.hexdigest()
+        accepted, job_id = await document_manager.enqueue(
+            document_id=document_id,
+            name=source_name,
+            size_bytes=size,
+            staged_path=upload_path,
+        )
+        items = await document_manager.documents()
+        document = next(item for item in items if item["document_id"] == document_id)
+        return web.json_response(
+            {"accepted": accepted, "job_id": job_id or None, "document": document},
+            status=202 if accepted else 200,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def close_documents(app):
+        await document_manager.close()
+
     app.add_routes([web.get("/health", health), web.get("/health/services", services), web.post("/sessions", create),
                     web.get("/sessions", listing), web.get("/sessions/{session_id}", show),
                     web.get("/sessions/{session_id}/history", history),
-                    web.post("/sessions/{session_id}/end", end)])
+                    web.post("/sessions/{session_id}/end", end), web.get("/documents", documents),
+                    web.post("/documents", upload_document)])
+    app.on_cleanup.append(close_documents)
     return app
 
 

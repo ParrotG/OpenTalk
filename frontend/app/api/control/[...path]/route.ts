@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 const backend = () => (process.env.OPENTALK_API_URL || 'http://127.0.0.1:8080').replace(/\/$/, '');
-const validPath = /^(health\/services|sessions|sessions\/[a-zA-Z0-9_-]+(?:\/(history|end))?)$/;
+const validPath =
+  /^(health\/services|documents|sessions|sessions\/[a-zA-Z0-9_-]+(?:\/(history|end))?)$/;
 let lastFailureLog = 0;
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const path = (await context.params).path.join('/');
   if (
     !validPath.test(path) ||
-    (request.method === 'POST' && !/^sessions(?:\/[a-zA-Z0-9_-]+\/end)?$/.test(path))
+    (request.method === 'POST' && !/^(documents|sessions(?:\/[a-zA-Z0-9_-]+\/end)?)$/.test(path))
   ) {
     return NextResponse.json({ message: 'Endpoint not found.' }, { status: 404 });
   }
@@ -26,8 +28,19 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     );
   }
   try {
-    let body: string | undefined;
-    if (request.method === 'POST') {
+    let body: BodyInit | undefined;
+    let headers: HeadersInit | undefined;
+    if (request.method === 'POST' && path === 'documents') {
+      const contentType = request.headers.get('content-type');
+      if (!contentType?.startsWith('multipart/form-data;')) {
+        return NextResponse.json(
+          { message: 'A multipart PDF upload is required.' },
+          { status: 400 },
+        );
+      }
+      body = request.body || undefined;
+      headers = { 'Content-Type': contentType };
+    } else if (request.method === 'POST') {
       const raw = await request.text();
       if (raw.length > 16384)
         return NextResponse.json({ message: 'Request is too large.' }, { status: 413 });
@@ -65,6 +78,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       } else {
         body = JSON.stringify({ attempt_id: data.attempt_id });
       }
+      headers = { 'Content-Type': 'application/json' };
     }
     const url = new URL(`${backend()}/${path}`);
     for (const name of ['limit', 'offset', 'tail']) {
@@ -75,9 +89,12 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       method: request.method,
       body,
       cache: 'no-store',
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      signal: AbortSignal.timeout(8000),
-    });
+      headers,
+      signal: AbortSignal.timeout(
+        path === 'documents' && request.method === 'POST' ? 120000 : 8000,
+      ),
+      ...(path === 'documents' && request.method === 'POST' ? { duplex: 'half' } : {}),
+    } as RequestInit & { duplex?: 'half' });
     return new NextResponse(await response.text(), {
       status: response.status,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
@@ -86,15 +103,13 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     if (error instanceof SyntaxError)
       return NextResponse.json({ message: 'Invalid JSON request.' }, { status: 400 });
     if (Date.now() - lastFailureLog > 30000) {
-      console.warn(
-        'OpenTalk session API is unavailable. Check OPENTALK_API_URL and backend services.',
-      );
+      console.warn('OpenTalk API is unavailable. Check OPENTALK_API_URL and backend services.');
       lastFailureLog = Date.now();
     }
     return NextResponse.json(
       {
         error: 'backend_unavailable',
-        message: 'Session API is unavailable. Check backend services and try again.',
+        message: 'OpenTalk API is unavailable. Check backend services and try again.',
       },
       { status: 503 },
     );

@@ -23,6 +23,33 @@ export type Message = {
   interrupted?: boolean;
 };
 export type Health = { status: string; services: Record<string, { status: string }> };
+export type DocumentStage = {
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  error?: string;
+};
+export type SavedDocument = {
+  document_id: string;
+  name: string;
+  size_bytes: number;
+  parse_count: number;
+  parse_version: string | null;
+  status:
+    | 'uploaded'
+    | 'queued'
+    | 'parsing'
+    | 'parsed'
+    | 'indexing'
+    | 'indexed'
+    | 'vectorizing'
+    | 'ready'
+    | 'failed';
+  updated_at: string;
+  stages: {
+    parsing: DocumentStage;
+    indexing: DocumentStage;
+    vectorization: DocumentStage;
+  };
+};
 
 export async function control<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api/control/${path}`, {
@@ -35,6 +62,36 @@ export async function control<T>(path: string, body?: unknown): Promise<T> {
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || data.error || 'Session request failed.');
   return data as T;
+}
+
+export async function uploadDocument(file: File): Promise<{
+  accepted: boolean;
+  job_id: string | null;
+  document: SavedDocument;
+}> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  const response = await fetch('/api/control/documents', {
+    method: 'POST',
+    body,
+    cache: 'no-store',
+    signal: AbortSignal.timeout(120000),
+  });
+  const raw = await response.text();
+  let data: { message?: string; error?: string };
+  try {
+    data = JSON.parse(raw) as { message?: string; error?: string };
+  } catch {
+    throw new Error(
+      response.ok ? 'Document upload returned an invalid response.' : 'Document upload failed.',
+    );
+  }
+  if (!response.ok) throw new Error(data.message || data.error || 'Document upload failed.');
+  return data as {
+    accepted: boolean;
+    job_id: string | null;
+    document: SavedDocument;
+  };
 }
 
 export async function history(id: string): Promise<Message[]> {

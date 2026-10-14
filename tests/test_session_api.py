@@ -68,6 +68,13 @@ def test_api_invalid_requests_failed_restore_and_pagination():
             for payload in ({}, [], {"request_id": "x", "agent": "invalid"},
                             {"request_id": "bad-mode", "voice_enabled": "false"}):
                 assert (await client.post("/sessions", json=payload)).status == 400
+            oversized = await client.post(
+                "/sessions",
+                data=b'{"request_id":"' + b"x" * 17000 + b'"}',
+                headers={"Content-Type": "application/json"},
+            )
+            assert oversized.status == 413
+            assert (await oversized.json())["error"] == "request_too_large"
             saved = store.reserve(request_id="failed")
             store.fail(saved["session_id"], saved["attempt_id"], "test_failure")
             assert (await client.post("/sessions", json={"request_id": "resume", "resume_session_id": saved["session_id"]})).status == 409

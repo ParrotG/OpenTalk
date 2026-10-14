@@ -105,6 +105,12 @@ a {
   gap: 8px;
   min-width: 0;
 }
+.brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
 .toolbar-button,
 .utility summary,
 .text-button {
@@ -124,9 +130,204 @@ a {
 .toolbar-button:hover:not(:disabled),
 .text-button:hover:not(:disabled),
 .utility summary:hover,
-.utility[open] summary {
+.utility[open] summary,
+.toolbar-button.selected {
   background: var(--surface);
   color: var(--ink);
+}
+.workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.conversation {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+.document-panel {
+  display: none;
+  width: 336px;
+  min-width: 336px;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+.document-panel.open {
+  display: flex;
+}
+.document-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 16px 12px 20px;
+}
+.document-panel-header h2 {
+  font-size: 15px;
+}
+.document-panel-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.document-actions {
+  display: flex;
+  gap: 8px;
+  padding: 4px 16px 14px;
+}
+.upload-button {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+.upload-button:hover:not(:disabled) {
+  opacity: 0.82;
+}
+.document-panel-error {
+  margin: 0 16px 12px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--error-bg);
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.document-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 12px 20px;
+  scrollbar-width: thin;
+}
+.document-card {
+  margin-bottom: 7px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--background);
+}
+.document-summary {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+.document-icon {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+}
+.document-summary h3 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.document-summary p,
+.document-meta {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+.document-status {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: capitalize;
+}
+.document-status.ready {
+  background: color-mix(in srgb, var(--good) 14%, transparent);
+  color: var(--good);
+}
+.document-status.failed {
+  background: var(--error-bg);
+  color: var(--danger);
+}
+.document-stages {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+.document-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.document-stage .dot {
+  width: 5px;
+  height: 5px;
+}
+.document-stage.completed .dot {
+  background: var(--good);
+}
+.document-stage.running .dot {
+  background: #bf9a54;
+}
+.document-stage.failed {
+  color: var(--danger);
+}
+.document-stage.failed .dot {
+  background-color: var(--danger);
+}
+.document-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 11px;
+}
+.document-meta code {
+  font-size: 10px;
+}
+.document-error {
+  margin: 9px 0 0;
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.document-empty {
+  padding: 42px 22px;
+  color: var(--muted);
+  text-align: center;
+}
+.document-empty p {
+  margin: 10px 0 4px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.document-empty span {
+  font-size: 11px;
+  line-height: 1.55;
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .utility summary {
   cursor: pointer;
@@ -410,6 +611,9 @@ code {
   .brand {
     font-size: 18px;
   }
+  .brand-actions {
+    gap: 4px;
+  }
   .header-actions {
     gap: 2px;
   }
@@ -423,6 +627,14 @@ code {
   }
   .utility-panel {
     right: 12px;
+  }
+  .document-panel {
+    position: fixed;
+    z-index: 5;
+    inset: 0;
+    width: 100%;
+    min-width: 0;
+    border-right: 0;
   }
   .text-button {
     font-size: 11px;

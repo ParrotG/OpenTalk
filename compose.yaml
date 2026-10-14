@@ -51,6 +51,10 @@ services:
 
   api:
     <<: *backend
+    image: opentalk-backend-api:local
+    build:
+      context: .
+      target: api-runtime
     restart: unless-stopped
     command: ["python", "-m", "opentalk.sessions.api"]
     env_file: ["${OPENTALK_ENV_FILE:-.env.local}"]
@@ -59,10 +63,15 @@ services:
       LIVEKIT_URL: ws://livekit:${OPENTALK_LIVEKIT_PORT:-7880}
       LIVEKIT_PUBLIC_URL: ws://localhost:${OPENTALK_LIVEKIT_PORT:-7880}
       OPENTALK_WORKER_HEALTH_URL: http://worker:8081
+      OPENTALK_QDRANT_URL: http://qdrant:6333
     volumes:
       - session-data:/app/data/sessions
+      - ${OPENTALK_DOCUMENTS_DIR:-./data/documents}:/app/data/documents
+      - document-processing-model-cache:/home/app/.cache
     depends_on:
       livekit:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
@@ -142,7 +151,6 @@ services:
       - document-model-cache:/home/app/.cache
 
   qdrant:
-    profiles: [rag]
     image: qdrant/qdrant:v1.19.2
     restart: unless-stopped
     logging: *logging
@@ -178,4 +186,5 @@ volumes:
   telemetry-data:
   document-model-cache:
   embedding-model-cache:
+  document-processing-model-cache:
   qdrant-data:

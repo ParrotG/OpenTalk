@@ -330,7 +330,7 @@ backend/opentalk/
   sessions/store.py           Sessions, attempts, requests, history, leases.
   sessions/tracing.py         Optional OpenTelemetry-to-SQLite exporter.
   sessions/telemetry.py       Bounded event/metric storage.
-  sessions/api.py             Control API for allocation, tokens, history, and end requests.
+  sessions/api.py             Control API for sessions plus document upload and status.
   documents/parser.py         Docling PDF parsing and versioned file artifact export.
   documents/parse.py          Manual PDF parsing command-line entry point.
   documents/indexing.py       Hierarchical index preparation without embeddings or a database.
@@ -340,8 +340,11 @@ backend/opentalk/
   documents/vector_index.py   Prepared-node embedding, retrieval payload, and run manifest.
   documents/index_vectors.py  Manual vector-indexing command-line entry point.
   documents/search_vectors.py Raw dense-search command for stage-level quality checks.
+  documents/pipeline.py       Parse, prepare, and vector-index composition boundary.
+  documents/library.py        Global artifact listing and owned processing subprocesses.
+  documents/process.py        Complete uploaded-document command-line entry point.
 frontend/
-  app/ and components/        LiveKit browser UI and server-side control proxy.
+  app/ and components/        LiveKit UI, document drawer, and server-side control proxy.
 config/                       Public, non-secret configuration for providers and runtime.
 tests/                        Offline backend tests plus opt-in live LLM tests.
 ```
@@ -656,7 +659,7 @@ only to loopback and stores data in the `qdrant-data` named volume.
 Prepare the Python and frontend dependencies once:
 
 ```bash
-uv sync --locked --python 3.11
+uv sync --locked --python 3.11 --inexact --group documents
 cd frontend
 pnpm install --frozen-lockfile
 cd ..
@@ -665,6 +668,9 @@ cd ..
 Then start the services in separate terminals from the project root:
 
 ```bash
+# Terminal 0: vector database used by uploaded documents and retrieval
+docker compose up -d --wait qdrant
+
 # Terminal 1: LiveKit transport
 livekit-server --config config/livekit-local.yaml
 
@@ -684,6 +690,12 @@ API, LiveKit server, worker, and provider configuration as available/configured.
 LiveKit `7880`, RTC TCP `7881`, RTC UDP `7882`, session API `8080`, worker health `8081`, and frontend
 `3000`.
 
+Open **Documents** in the header to use the left drawer. It lists global PDFs and their Parse,
+Structure, and Vectors stages. **Upload PDF** streams one file to the control API and returns as soon
+as the job is queued; the drawer polls file-side manifests while Docling, hierarchical preparation,
+and vector indexing run in order. An identical PDF that is already ready is reused by content hash.
+The document store remains independent of the selected conversation and session database.
+
 For a production-style frontend build use `pnpm build && pnpm start` instead of `pnpm dev`.
 
 ### 7.8 Docker Compose
@@ -696,8 +708,9 @@ docker compose ps
 docker compose logs --tail 100 worker api
 ```
 
-Open <http://localhost:3000>. The stack includes LiveKit Server, the session API, the agent worker,
-the standalone Next.js frontend. Session and telemetry data use separate named volumes.
+Open <http://localhost:3000>. The stack includes LiveKit Server, Qdrant, the document-capable session
+API, the agent worker, and the standalone Next.js frontend. Session, telemetry, vector data, model
+caches, and the bind-mounted global document directory remain separate.
 
 ```bash
 # Stop the stack while preserving data.

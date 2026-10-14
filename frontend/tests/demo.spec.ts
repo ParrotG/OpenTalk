@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import type { SavedDocument } from '@/lib/control';
 
 const saved = (id: string, status: string) => ({
   session_id: id,
@@ -9,6 +10,22 @@ const saved = (id: string, status: string) => ({
   end_requested: false,
 });
 async function mockControl(page: Page, available = true) {
+  let documents: SavedDocument[] = [
+    {
+      document_id: 'a'.repeat(64),
+      name: 'Research notes.pdf',
+      size_bytes: 2048,
+      parse_count: 1,
+      parse_version: 'docling-test',
+      status: 'ready',
+      updated_at: '2026-10-14T10:00:00Z',
+      stages: {
+        parsing: { status: 'completed' },
+        indexing: { status: 'completed' },
+        vectorization: { status: 'completed' },
+      },
+    },
+  ];
   await page.route('**/api/control/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     let body: unknown = {};
@@ -22,7 +39,25 @@ async function mockControl(page: Page, available = true) {
           providers: { status: 'configured' },
         },
       };
-    else if (path.endsWith('/sessions'))
+    else if (path.endsWith('/documents')) {
+      if (route.request().method() === 'POST') {
+        const uploaded: SavedDocument = {
+          ...documents[0],
+          document_id: 'b'.repeat(64),
+          name: 'Uploaded.pdf',
+          parse_count: 0,
+          parse_version: null,
+          status: 'queued',
+          stages: {
+            parsing: { status: 'pending' },
+            indexing: { status: 'pending' },
+            vectorization: { status: 'pending' },
+          },
+        };
+        documents = [uploaded, ...documents];
+        body = { accepted: true, job_id: 'upload-job', document: uploaded };
+      } else body = { items: documents, max_file_size_bytes: 100 * 1024 * 1024 };
+    } else if (path.endsWith('/sessions'))
       body = [saved('normal-session', 'completed'), saved('failed-session', 'failed')];
     else if (path.endsWith('/history'))
       body = {
@@ -53,6 +88,31 @@ async function mockControl(page: Page, available = true) {
     await route.fulfill({ json: body });
   });
 }
+
+test('document drawer uploads a PDF and shows global processing stages', async ({ page }) => {
+  await mockControl(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Documents' }).click();
+  const panel = page.getByRole('complementary', { name: 'Documents' });
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('Research notes.pdf');
+  await expect(panel).toContainText('Parse');
+  await expect(panel).toContainText('Structure');
+  await expect(panel).toContainText('Vectors');
+  await panel.locator('input[type="file"]').setInputFiles({
+    name: 'Uploaded.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.7\nfixture'),
+  });
+  await expect(panel).toContainText('Uploaded.pdf');
+  await expect(panel.locator('.document-status').first()).toHaveText('queued');
+  await page.screenshot({ path: 'test-results/documents-desktop.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/documents-mobile.png' });
+  await page.getByRole('button', { name: 'Close documents' }).click();
+  await expect(panel).toBeHidden();
+});
 
 test('history displays native messages as plain text and only completed sessions resume', async ({
   page,
