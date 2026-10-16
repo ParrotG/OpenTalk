@@ -4,7 +4,8 @@ OpenTalk is a browser-based, realtime voice-assistant stack. It combines WebRTC 
 LiveKit Agents session, independently replaceable streaming ASR / LLM / TTS providers, extensible agent
 capabilities, and durable session history. The repository includes a text-only agent entry point,
 a local microphone console, a minimal React/Next.js web client, versioned Docling PDF parsing,
-Docker Compose packaging, and offline verification tools.
+hierarchical hybrid RAG over a global PDF library, Docker Compose packaging, and offline
+verification tools.
 
 The generic conversation agent is the default runtime. New business capabilities can be added
 through the agent factory without rewriting transport or session persistence.
@@ -27,7 +28,13 @@ https://www.youtube.com/watch?v=qIVQs0rmlEs
 - A local CPU Silero VAD used for speech activity, endpointing support, and barge-in.
 - Independent SQLite stores for resumable session history and bounded telemetry / traces.
 - A minimal Next.js client that connects directly to LiveKit, supports text and voice modes, shows
-  transcripts and a waveform, and talks to a same-origin session-control API.
+  transcripts and a waveform, provides a PDF upload/status drawer, and talks to a same-origin
+  session-control API.
+- A staged PDF pipeline that preserves the original file, versioned Docling artifacts, structural
+  elements, referenced visuals, table exports, hierarchical nodes, and per-stage manifests.
+- Agentic document retrieval with local multilingual dense embeddings, deterministic lexical sparse
+  vectors, Qdrant reciprocal-rank fusion, parent/neighbor context expansion, and optional image
+  evidence for the multimodal LLM path.
 - Local and Docker startup paths, component-level smoke tools, offline tests, and optional live
   integration tests.
 
@@ -53,6 +60,8 @@ concurrently, react to interruptions, and persist enough state for a coherent mu
 | Multilingual input | Preserve Chinese/English and code-switched content within an utterance and across turns. |
 | Language preference | Track an optional `preferred_response_language` and apply it to later assistant output/TTS where supported. |
 | Tools | Allow the model to inspect data and perform constrained business actions with structured arguments when new capabilities are registered. |
+| PDF knowledge | Upload global PDFs, parse text and non-text elements, preserve document structure and provenance, and expose stage status independently of conversations. |
+| Document retrieval | Let the agent decide when to search, form a standalone query plus an optional alternate wording, and answer from page-located text or image evidence. |
 | Persistence | Keep resumable conversation history and user data separate from bounded diagnostics and business records. |
 | Traces | Record model/tool/session events and optional OpenTelemetry spans for debugging and latency analysis. |
 | Frontend | Minimal browser UI for text chat, voice capture, playback, transcript, connection state, and session selection. |
@@ -68,6 +77,7 @@ concurrently, react to interruptions, and persist enough state for a coherent mu
 | Replacability | ASR, LLM, and TTS are selected by configuration and wrapped in small factories. Business logic does not import voice or model SDKs. |
 | Portability | Run as a text agent, local Python services, or a Docker Compose stack. The browser only receives short-lived room tokens. |
 | Resource bounds | Bounded conversation context, bounded diagnostic queues, telemetry retention, and a maximum session duration. |
+| Inspectability | Keep parse, hierarchy, vector-index, and failure manifests readable on disk so every stage can be evaluated without running the full agent. |
 | Privacy | Provider credentials stay on the backend. The browser receives no model or LiveKit API secrets. |
 | Maintainability | Small modules, native framework interfaces, offline component tests, and optional paid live tests. |
 | Current scale | Optimised for a local, single-user deployment with SQLite and an in-process worker. Cloud concurrency and multi-tenancy are future work. |
@@ -76,17 +86,23 @@ concurrently, react to interruptions, and persist enough state for a coherent mu
 
 ## 3. Architecture, technology choices, and internal design
 
-### 3.1 Architecture diagram
+### 3.1 Architecture diagrams
+
+The running system has three cooperating paths: realtime conversation, session/document control,
+and document knowledge. PDF data is global to the deployment rather than owned by a conversation
+session.
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Client["Browser client"]
-        UI["React / Next.js UI<br/>text + voice, transcript, waveform, session list"]
+        UI["React / Next.js UI<br/>text + voice, transcript, sessions"]
+        DU["Documents drawer<br/>upload, list, stage status"]
     end
 
-    subgraph Control["Session control plane"]
-        API["aiohttp session API<br/>allocate room, issue short-lived token, history, end"]
+    subgraph Control["Control plane"]
+        API["aiohttp API<br/>sessions, room tokens, document upload/status"]
         SDB[("Session history SQLite<br/>sessions, attempts, requests, history")]
+        JOB["Owned background subprocess<br/>one document pipeline slot"]
     end
 
     subgraph Transport["Realtime transport"]
@@ -99,6 +115,13 @@ flowchart LR
         AG["ConversationAgent<br/>instructions, tools, reasoning escalation"]
     end
 
+    subgraph Knowledge["Global document knowledge"]
+        PIPE["Docling + hierarchy + embedding pipeline"]
+        FILES[("Versioned file artifacts<br/>PDF, JSON/JSONL, Markdown, images, tables, manifests")]
+        QD[("Qdrant<br/>dense + lexical vectors and retrieval payloads")]
+        RET["Lazy retrieval service<br/>hybrid fusion + context expansion"]
+    end
+
     subgraph Providers["Streaming providers, independently replaceable"]
         STT["Soniox STT<br/>interim + final transcripts, endpointing"]
         LLM["DeepSeek via OpenAI-compatible API<br/>streaming text + tool calls"]
@@ -108,10 +131,17 @@ flowchart LR
     TEL[("Bounded telemetry and traces SQLite<br/>metrics, events, optional OTel spans")]
 
     UI -->|REST| API
+    DU -->|stream one PDF / poll status| API
     API --> SDB
+    API --> JOB
+    API -->|read stage manifests| FILES
+    JOB --> PIPE
+    PIPE --> FILES
+    PIPE --> QD
     API -->|room dispatch and JWT| LK
     UI <-->|WebRTC audio and data| LK
     LK <--> AS
+    AS --> SDB
     AS --> VAD
     AS <--> STT
     AS <--> LLM
@@ -119,6 +149,46 @@ flowchart LR
     AS --> AG
     AS --> TEL
     AG -.->|one isolated analysis request| LLM
+    AG -->|search_documents| RET
+    RET --> QD
+    RET -->|resolve referenced visuals| FILES
+    RET -->|page-located text and optional images| AG
+```
+
+The ingestion path keeps parsing, hierarchy preparation, and vector persistence independently
+inspectable:
+
+```mermaid
+flowchart LR
+    UP["Browser upload or CLI PDF"] --> VALIDATE["Stream validation<br/>size, PDF signature, SHA-256"]
+    VALIDATE --> SOURCE["Global source.pdf<br/>document ID = content hash"]
+    SOURCE --> DOCLING["Docling conversion<br/>OCR, structure, pictures, tables, formulas, code"]
+    DOCLING --> PARSE["Immutable parse version<br/>document.json, document.md, elements.jsonl,<br/>referenced assets, visual crops, table HTML/CSV"]
+    PARSE --> PREP["hierarchical-v2 preparation<br/>document → section → context → leaf"]
+    PREP --> NODES["nodes.jsonl + index manifest<br/>stable links, pages, provenance, asset references"]
+    NODES --> DENSE["FastEmbed passage vectors<br/>multilingual MPNet"]
+    NODES --> SPARSE["Deterministic multilingual<br/>lexical sparse vectors"]
+    DENSE --> QDRANT[("Qdrant collection")]
+    SPARSE --> QDRANT
+    NODES -->|retrieval payloads| QDRANT
+```
+
+At query time the agent controls retrieval, while the retrieval service keeps ranking and context
+assembly deterministic:
+
+```mermaid
+flowchart LR
+    USER["User question"] --> LLMQ["Conversation LLM<br/>decide whether retrieval is needed"]
+    LLMQ --> TOOL["search_documents<br/>standalone query, optional alternate query,<br/>document filter, result limit, image flag"]
+    TOOL --> QUERY["Dense query embedding<br/>+ lexical sparse encoding"]
+    QUERY --> RRF["Qdrant prefetch<br/>RRF over all dense and lexical rankings"]
+    RRF --> LEAF["Precise leaf hits"]
+    LEAF --> EXPAND["Expand stored parent context<br/>or previous/current/next leaves"]
+    EXPAND --> TEXT["Bounded evidence<br/>text, section path, pages, provenance"]
+    EXPAND --> IMAGE["Optional referenced images<br/>validated local paths and size limits"]
+    TEXT --> LLMQ
+    IMAGE --> MM["LiveKit ImageContent"] --> LLMQ
+    LLMQ --> ANSWER["Grounded spoken/text answer"]
 ```
 
 ### 3.2 Core technology choices and why they were made
@@ -191,6 +261,59 @@ the LiveKit Server and agent worker. Next.js route handlers proxy control-plane 
 session API, which prevents the browser from speaking directly to an internal API and keeps server
 secrets out of the client bundle.
 
+#### Docling for structure-aware PDF parsing
+
+Docling is used because the retrieval corpus needs more than plain extracted text. Its document
+model exposes headings, hierarchy, content layers, page/bounding-box provenance, pictures, tables,
+formulas, code, and enrichment metadata through one local pipeline. The current configuration uses
+OCR, accurate TableFormer structure extraction, picture description/classification, formula
+enrichment, and code enrichment. Remote Docling services are disabled; models run locally and are
+cached between runs.
+
+Images use Docling's `REFERENCED` export mode. The JSON and Markdown artifacts therefore refer to
+separate image files instead of embedding large base64 payloads, which keeps artifacts reviewable
+and lets retrieval attach only the images needed for one answer. Tables are additionally exported as
+HTML and CSV, so their structure can be inspected independently and their CSV content can be indexed
+as text. The raw Docling JSON is retained because the simplified `elements.jsonl` view is an indexing
+contract, not a replacement for the parser's complete output.
+
+#### FastEmbed and multilingual MPNet
+
+Dense vectors are produced locally on CPU through FastEmbed with
+`sentence-transformers/paraphrase-multilingual-mpnet-base-v2`. A multilingual model matches the
+Chinese/English conversation target and supports cross-language semantic retrieval without sending
+document text to a separate embedding API. Document and query embedding use the provider's distinct
+passage/query methods. Token counts and vector dimensions are validated before storage; oversized
+chunks fail visibly instead of being silently truncated.
+
+Embedding model, preparation profile, and collection names are versioned configuration. Changing an
+embedding space requires a new profile or collection so vectors from incompatible models cannot be
+mixed accidentally.
+
+#### Qdrant for hybrid vector retrieval
+
+Qdrant stores one named cosine dense vector and one named sparse lexical vector per indexable leaf.
+It was selected because the same collection can filter structured payloads and fuse multiple dense
+and sparse prefetch rankings with reciprocal rank fusion (RRF). Dense retrieval handles paraphrases
+and cross-language meaning; lexical retrieval preserves exact identifiers, names, formula tokens,
+and terminology that semantic embeddings can miss.
+
+Each point also carries the leaf text, a bounded parent snapshot, neighbor IDs, section path, pages,
+bounding-box provenance, parse/index/embedding versions, and asset references. This duplicates a
+small amount of file-derived metadata intentionally: one Qdrant hit contains enough information for
+normal context expansion, while immutable file artifacts remain the inspectable source for parsing
+and visual assets.
+
+#### Filesystem artifacts and manifests
+
+PDF originals, parse outputs, prepared nodes, and stage manifests remain files under a global
+content-hash directory; vector values live in Qdrant. This split follows the data's access pattern:
+large parser outputs and images are easy to inspect, diff, mount, and preserve as files, while the
+vector database handles ranked search and metadata filtering. Every parse is immutable and every
+preparation/embedding run names its profile, which allows side-by-side experiments without
+overwriting earlier evidence. Manifests and JSONL indexes use atomic replacement, while stable
+vector IDs make retries safe.
+
 ### 3.3 Streaming ASR + LLM + TTS orchestration
 
 The realtime path is designed around native LiveKit AgentSession nodes rather than several
@@ -244,12 +367,17 @@ application command.
 ### 3.5 Agent and capability composition
 
 `ConversationAgent` owns language preferences, runtime context, stale-response validation,
-reasoning escalation and guarded tool execution. `voice/factories.py` currently registers only
-`conversation`. Add a service adapter and agent tools there when introducing a new business.
-Session storage and browser controls remain independent of business implementations.
+reasoning escalation, document retrieval, and guarded tool execution. `voice/factories.py`
+currently registers only `conversation` and injects a lazy retrieval service. Add a service adapter
+and agent tools there when introducing a new business. Session storage, document storage, and
+browser controls remain independent of business implementations.
 
-`escalate_reasoning(task, message?)` performs one isolated, tool-free analysis per user turn.
+`escalate_reasoning(task, message)` performs one isolated, tool-free analysis per user turn.
 It returns the conclusion to the normal agent without changing the default model profile.
+`search_documents(query, alternate_query, document_id, max_results, include_images)` returns
+grounded evidence from the global PDF corpus. Both tools run within the current turn's stale-response
+guard; retrieval performs blocking model/database work in a worker thread rather than on the
+realtime event loop.
 
 ### 3.6 Session and trace persistence
 
@@ -305,6 +433,8 @@ The frontend is a small Next.js and React application using the native LiveKit b
 - A lightweight service panel checks the session API, LiveKit server, worker health, and provider
   configuration presence without calling paid provider APIs.
 - Session selection, history, automatic save/close, and resume are handled through the control API.
+- A left-side document drawer streams one PDF upload, lists global documents, and polls the Parse,
+  Structure, and Vectors manifests until the document is ready or a stage reports failure.
 - Next.js route handlers proxy control-plane requests to the internal session API, and the browser
   receives only a short-lived LiveKit JWT. Provider keys and LiveKit API secrets never reach the
   client bundle.
@@ -312,7 +442,116 @@ The frontend is a small Next.js and React application using the native LiveKit b
 The minimal client connects to the same LiveKit Server,
 AgentSession, and providers as the backend command-line paths.
 
-### 3.8 Module internals worth knowing
+### 3.8 PDF ingestion and versioned artifacts
+
+Documents are deployment-global and deliberately have no `session_id`. The browser posts one
+multipart PDF through the same-origin Next.js proxy to the aiohttp control API. The API streams the
+body to a staging file in 1 MiB chunks while enforcing the configured byte limit, checking the PDF
+signature, and calculating SHA-256. The digest becomes the stable `document_id`; an identical ready
+document is reused rather than parsed and indexed again.
+
+Accepted uploads are handed to an owned subprocess instead of running Docling or FastEmbed on the
+aiohttp event loop. The reference deployment uses one processing slot because Docling and embedding
+models are memory-intensive. The API returns after queueing and reconstructs document status from
+the stage manifests, supplemented by in-process queued/processing state before the first manifest
+exists. Closing the API terminates subprocesses it owns.
+
+The file layout is intentionally explicit:
+
+```text
+data/documents/<sha256>/
+  source.pdf
+  parses/<docling-version_timestamp_suffix>/
+    manifest.json
+    document.json
+    document.md
+    elements.jsonl
+    assets/
+    visuals/
+    tables/*.html
+    tables/*.csv
+    indexing/<index-profile>/
+      index_manifest.json
+      nodes.jsonl
+      vector_indexes/<embedding-profile>/manifest.json
+```
+
+`manifest.json` records the parser version, settings, timestamps, element counts, outputs, warnings,
+and failure information. `elements.jsonl` provides stable per-parse element IDs, Docling
+parent/child links, labels, heading levels, content layers, page geometry, text, enrichment metadata,
+annotations, and asset paths. The original PDF and all parse/intermediate outputs stay on the
+filesystem; Compose
+uses a host directory mount for them, a named model cache, and a separate Qdrant volume.
+
+### 3.9 Hierarchical preparation and vector indexing
+
+Index preparation is deterministic and database-independent. It reads one completed parse and
+builds a hierarchy with four practical levels:
+
+1. one non-indexable document root;
+2. nested section nodes from Docling titles and section headers;
+3. bounded context parents that group adjacent content within a section;
+4. indexable leaves for text chunks and non-text evidence, with table leaves split again when
+   necessary.
+
+Text leaves include their heading path in `embedding_text`, while their returned `text` remains the
+content itself. Chunks prefer punctuation/whitespace boundaries, overlap by a configured amount,
+and carry source element IDs, pages, bounding boxes, previous/next links, and referenced assets.
+Docling-labelled furniture, page headers, and page footers are excluded together with their
+descendants. No position-, repetition-, image-hash-, or classifier-based heuristic removes content,
+because false deletion is harder to recover from than retrieval noise.
+
+Non-text elements participate from the start of the pipeline:
+
+- Pictures retain referenced image files. Only semantic fields such as captions, descriptions,
+  summaries, keywords, topics, entities, enriched code/molecule text, and chart titles enter the
+  embedding text; provider/model names, classifier candidates, confidence values, and generation
+  control tokens do not.
+- Tables use exported CSV text for searchable chunks and retain HTML/CSV/visual references. The
+  full bounded table content can be returned as parent context.
+- Formulas and charts use Docling text, enrichment metadata, and annotations when available. Their
+  visual references remain available for multimodal inspection.
+
+Only nodes marked `indexable` are embedded. Each leaf receives a FastEmbed dense vector and a
+deterministic Unicode-aware sparse vector: Han runs generate character unigrams and bigrams, while
+other alphanumeric runs generate normalized word-like tokens. Qdrant applies IDF to the sparse
+space. UUIDv5 point IDs are derived from document, parse, index, embedding profile, and node IDs, so
+repeating the same vectorization run upserts the same logical points. The run manifest verifies the
+stored point count and records failures without appending duplicate JSONL records.
+
+### 3.10 Agentic hybrid retrieval and multimodal evidence
+
+Retrieval is agentic at the decision and query-planning boundary. The conversation model decides
+whether uploaded documents are relevant and calls `search_documents`; it converts the current turn
+and useful conversation context into a standalone query, and may add one alternate wording or exact
+term variant. This keeps query transformation aware of dialogue intent without adding another model
+call to every retrieval. The current implementation has no separate query router or unconstrained
+multi-query generator.
+
+The retrieval service validates the configured Qdrant schema and embedding space on first use, then
+initializes FastEmbed lazily so ordinary conversations do not load the embedding model. For every
+query variant it creates one dense and one lexical query, asks Qdrant for bounded candidates, and
+uses RRF across all rankings. Optional filters can restrict document ID, parse version, index
+profile, and embedding profile.
+
+Search targets precise leaves, but answers usually need more context. Each hit therefore expands to
+its stored bounded parent. If no parent text exists, retrieval fetches the previous and next indexed
+leaves and returns a surrounding window. Evidence remains bounded and contains both the exact match
+and expanded context, plus rank, score, node type, section path, pages, provenance, and asset
+references. There is currently no cross-encoder reranker; hybrid RRF plus hierarchy expansion keeps
+the first implementation local, inspectable, and independently testable.
+
+Tables, formulas, charts, and picture descriptions enter the normal textual tool result. When the
+agent sets `include_images`, referenced image files are resolved beneath the immutable parse root,
+checked for supported MIME type and size, base64-encoded as LiveKit `ImageContent`, and attached to
+the next LLM step for multimodal reasoning. Image count and bytes are capped. Local paths are never
+returned in the normal agent tool payload.
+
+The corpus is global and currently has no tenant ACL or per-session selection state. That matches
+the local single-user scope; authentication, document ownership, deletion, and access-filtered
+retrieval are required before a multi-user deployment.
+
+### 3.11 Module internals worth knowing
 
 ```text
 backend/opentalk/
@@ -336,10 +575,13 @@ backend/opentalk/
   documents/indexing.py       Hierarchical index preparation without embeddings or a database.
   documents/prepare_index.py  Manual index-preparation command-line entry point.
   documents/embedding.py      Local embedding provider contract and FastEmbed adapter.
+  documents/lexical.py        Deterministic multilingual sparse-vector encoding.
   documents/vector_store.py   Qdrant schema, idempotent upsert, filtering, and raw search adapter.
   documents/vector_index.py   Prepared-node embedding, retrieval payload, and run manifest.
   documents/index_vectors.py  Manual vector-indexing command-line entry point.
   documents/search_vectors.py Raw dense-search command for stage-level quality checks.
+  documents/retrieval.py      Hybrid RRF retrieval, parent/neighbor expansion, image resolution.
+  documents/retrieve.py       Manual end-to-end retrieval command-line entry point.
   documents/pipeline.py       Parse, prepare, and vector-index composition boundary.
   documents/library.py        Global artifact listing and owned processing subprocesses.
   documents/process.py        Complete uploaded-document command-line entry point.
@@ -388,7 +630,18 @@ switching, microphone capture, playback, transcript revision handling, session c
 status panel, and a same-origin control proxy. It connects directly to LiveKit Server; no custom
 media protocol was introduced.
 
-### 4.5 Docker packaging
+### 4.5 PDF and RAG stages
+
+The document path was developed in data-flow order rather than behind one large abstraction.
+Docling parsing was first validated by inspecting versioned JSON, Markdown, element, image, and table
+artifacts. Hierarchical preparation was then tested as pure file transformation, including structure,
+links, chunk bounds, provenance, and non-text semantics. Embedding/Qdrant tests verified dimensions,
+token limits, stable upserts, payload filters, and point counts. Retrieval tests finally exercised
+dense-plus-lexical fusion, alternate queries, parent expansion, neighbor fallback, context bounds,
+and safe image resolution. The browser upload pipeline composes the same stages only after each can
+be run and evaluated independently from the CLI.
+
+### 4.6 Docker packaging
 
 The full stack was packaged as separate API, worker, LiveKit, frontend services
 with health checks, isolated named volumes, runtime-injected secrets, and an offline test profile.
@@ -448,14 +701,15 @@ Adding a new service currently requires a manual adapter and tool description. S
 the agent to discover and call a broader ecosystem of existing tools and services. Future services can be exposed through MCP with additional authentication, capability filtering, and
 auditing.
 
-### 6.3 Background memory and retrieval
+### 6.3 Background memory and retrieval evolution
 
-The current session design is voice-plus-text-oriented: history is stored and replayed as a
-conversation context. In a native voice application, users should not have to manage session
-history explicitly; memory should be created, summarised, retrieved, updated, and forgotten in the
-background. Future work includes long-term memory extraction, semantic or hybrid retrieval,
-user-profile management, privacy controls, and context assembly that hides the machinery from the
-user.
+The current hybrid RAG path retrieves from a global, explicitly uploaded PDF corpus. Conversation
+history is stored and replayed as bounded session context, but it is not converted into long-term
+memory. In a native voice application, users should not have to manage that memory explicitly;
+future work includes memory extraction, summarisation, retrieval, updates and forgetting,
+user-profile/privacy controls, document ownership and deletion, access-filtered collections,
+cross-encoder reranking, evaluation datasets, and background re-indexing when parser or embedding
+profiles change.
 
 ### 6.4 Cloud deployment and concurrency
 
@@ -520,7 +774,7 @@ LiveKit API secrets in `NEXT_PUBLIC_*` variables or the frontend environment.
 | `config/voice.toml` | LiveKit URL, agent name, VAD parameters, endpointing, and interruption duration. |
 | `config/sessions.toml` | Session/telemetry database paths, heartbeat/lease limits, context size, API host/port, token TTL, and tracing switch. |
 | `config/documents.toml` | Global PDF storage, parsing limits, image export, table mode, and Docling enrichment switches. |
-| `config/rag.toml` | Embedding model/profile, token and batch limits, Qdrant endpoint, collection, and write batch size. |
+| `config/rag.toml` | Embedding model/profile, token and batch limits, Qdrant schema/endpoint, hybrid candidate limits, context bounds, and image limits. |
 | `config/livekit-local.yaml` | Local LiveKit development server configuration for same-machine browser testing. |
 | `config/docker/` | Container-specific overrides for backend and session paths. |
 
@@ -604,7 +858,9 @@ chosen model's tokenizer limit.
 
 ### 7.6 Embed and persist prepared nodes
 
-The optional `rag` dependency group keeps FastEmbed and Qdrant out of the realtime voice image:
+FastEmbed and the Qdrant client are runtime dependencies because the conversation worker performs
+query embedding and retrieval. The `rag` group is also available for stage-specific local or
+container tooling:
 
 ```bash
 uv sync --locked --inexact --group rag
@@ -627,7 +883,7 @@ bounded parent context, neighbor IDs, section metadata, pages, provenance, and r
 table assets. The file-side run report is written to
 `vector_indexes/<embedding-profile>/manifest.json`; vector values live only in Qdrant.
 
-Use raw dense search to inspect this stage before implementing Retrieval:
+Use raw dense search to inspect the embedding/vector-storage stage independently:
 
 ```bash
 PYTHONPATH=backend uv run --locked --group rag \
@@ -639,8 +895,23 @@ PYTHONPATH=backend uv run --locked --group rag \
 
 Inspect result text, parent context, page numbers, scores, and asset references. Evaluate factual,
 paraphrased, Chinese/English cross-language, table, formula, picture-description, and unrelated
-queries as a set. This command performs dense vector search only; hybrid fusion, hierarchy expansion,
-neighbor fallback, reranking, and query transformation belong to the Retrieval stage.
+queries as a set. This command performs dense vector search only; it intentionally bypasses the
+production hybrid fusion and hierarchy expansion.
+
+Run the complete retrieval stage manually before testing it through the agent:
+
+```bash
+PYTHONPATH=backend uv run --locked --group rag \
+  python -m opentalk.documents.retrieve \
+  "Which component sends requests to the agent?" \
+  --alternate-query "agent request component" \
+  --document-id <document-id> --index-profile hierarchical-v2 --limit 6
+```
+
+This path uses the same dense and lexical encoders, Qdrant RRF query, filters, parent/neighbor
+expansion, context bounds, page/provenance payload, and referenced-image resolution as the
+`search_documents` agent tool. Query transformation itself remains the conversation model's job;
+the CLI accepts the already transformed primary and optional alternate queries.
 
 The one-shot container mounts the global document directory and writes to the same Qdrant service:
 
