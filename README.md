@@ -372,9 +372,10 @@ currently registers only `conversation` and injects the process-owned retrieval 
 and agent tools there when introducing a new business. Session storage, document storage, and
 browser controls remain independent of business implementations.
 
-`escalate_reasoning(task)` performs one isolated, tool-free analysis per user turn. The runtime
-selects the progress notice from the current turn's response language and repeats that language
-constraint for the main model before and after tool calls as well as for the reasoning model.
+`escalate_reasoning(task, message)` performs one isolated, tool-free analysis per user turn. The
+conversation model supplies a short, context-specific progress notice in `message`; the runtime
+checks it against the current turn's response language before speaking it unchanged. The same
+language constraint is repeated for the main model before and after tool calls and for the reasoning model.
 It returns the conclusion to the normal agent without changing the default model profile.
 `search_documents(query, alternate_query, document_id, max_results, include_images)` returns
 grounded evidence from the global PDF corpus. Both tools run within the current turn's stale-response
@@ -536,10 +537,12 @@ term variant. This keeps query transformation aware of dialogue intent without a
 call to every retrieval. The current implementation has no separate query router or unconstrained
 multi-query generator.
 
-Each LiveKit job process preloads FastEmbed before accepting a conversation and reuses that service
-across sessions. This moves local model and ONNX initialization out of the first RAG turn. The
-warmup does not require a Qdrant collection, so a new installation can still start before its first
-document is indexed; schema and embedding-space validation remain part of the first actual search. For every
+Each LiveKit job process starts FastEmbed preload in a background thread and reuses that service
+across sessions. Process startup and room connection therefore do not wait for local model and ONNX
+initialization. If a document query arrives before preload finishes, it waits for and reuses the same
+initialization rather than loading a second model. The warmup does not require a Qdrant collection,
+so a new installation can still start before its first document is indexed; schema and embedding-space
+validation remain part of the first actual search. For every
 query variant it creates one dense and one lexical query, asks Qdrant for bounded candidates, and
 uses RRF across all rankings. Optional filters can restrict document ID, parse version, index
 profile, and embedding profile.
@@ -670,7 +673,7 @@ unresponsive, while always using a slow reasoning model would add latency to ord
 The current solution keeps the default profile fast and non-thinking, but gives the model an
 `escalate_reasoning` tool. When the model judges that a question is difficult, it can:
 
-1. emit a short acknowledgement immediately;
+1. generate a short, context-specific acknowledgement in the user's response language;
 2. send a self-contained task and relevant facts to one isolated, stronger analysis request;
 3. receive only the conclusion;
 4. continue with the default profile and its registered tools.

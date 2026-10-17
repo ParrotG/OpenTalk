@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 
 from dotenv import load_dotenv
@@ -28,10 +29,7 @@ server = AgentServer(ws_url=os.environ.get("LIVEKIT_URL", configuration.livekit_
                         if "OPENTALK_WORKER_IDLE_PROCESSES" in os.environ else {}))
 
 
-def prewarm(process: JobProcess):
-    process.userdata["vad"] = create_vad(configuration)
-    retrieval = LazyRetrievalService()
-    process.userdata["retrieval"] = retrieval
+def _preload_retrieval(retrieval: LazyRetrievalService) -> None:
     started = time.monotonic()
     try:
         retrieval.warmup()
@@ -45,6 +43,20 @@ def prewarm(process: JobProcess):
             "Retrieval model preloaded.",
             extra={"elapsed_seconds": round(time.monotonic() - started, 3)},
         )
+
+
+def prewarm(process: JobProcess) -> None:
+    process.userdata["vad"] = create_vad(configuration)
+    retrieval = LazyRetrievalService()
+    process.userdata["retrieval"] = retrieval
+    preload = threading.Thread(
+        target=_preload_retrieval,
+        args=(retrieval,),
+        name="opentalk-retrieval-preload",
+        daemon=True,
+    )
+    process.userdata["retrieval_preload"] = preload
+    preload.start()
 
 
 server.setup_fnc = prewarm

@@ -19,10 +19,6 @@ logger = logging.getLogger(__name__)
 _CHINESE_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _LATIN_TEXT = re.compile(r"[A-Za-z]")
 _RESPONSE_LANGUAGE_NAMES = {"en": "English", "zh": "Chinese"}
-_REASONING_NOTICES = {
-    "en": "Please wait while I examine this more carefully.",
-    "zh": "请稍等，我会更仔细地分析这个问题。",
-}
 
 VOICE_INSTRUCTIONS = (
     " You are a voice assistant. Respond in natural conversational language suitable "
@@ -55,7 +51,8 @@ class ConversationAgent(Agent):
         super().__init__(chat_ctx=chat_ctx, instructions=instructions + VOICE_INSTRUCTIONS + (
             " Follow the user's language and explicit response language preferences. "
             "For a difficult task, use escalate_reasoning without a separate preamble. "
-            "Give the tool a self-contained task and relevant facts. "
+            "Give the tool a brief, natural progress notice in the response language, plus "
+            "a self-contained task and relevant facts. "
             "It performs one stronger analysis, then the default model continues. "
             "Do not escalate repeatedly for the same user turn. Use search_documents when "
             "the answer may depend on uploaded documents. Form a standalone search query "
@@ -250,11 +247,12 @@ class ConversationAgent(Agent):
         return await self.execute(context, "search_documents", work)
 
     @function_tool()
-    async def escalate_reasoning(self, context: RunContext, task: str) -> dict:
+    async def escalate_reasoning(self, context: RunContext, task: str, message: str) -> dict:
         """Briefly notify the user and perform one stronger, tool-free analysis.
 
-        Supply a self-contained task with relevant query results and constraints.
-        The default model resumes after this call. Do not request database edits here.
+        Write message as a short, natural progress notice in the current response language;
+        it is spoken unchanged. Supply a self-contained task with relevant query results and
+        constraints. The default model resumes after this call. Do not request database edits.
         """
         if not self._valid(context):
             return {"ok": False, "error": "stale_response"}
@@ -262,14 +260,33 @@ class ConversationAgent(Agent):
             return {"ok": False, "error": "reasoning_unavailable"}
         if self._reasoning_turn == self.turn_id:
             return {"ok": False, "error": "already_escalated", "message": "Use the existing analysis for this turn."}
+        notice = " ".join(message.split())
+        if not notice or len(notice) > 240:
+            return {
+                "ok": False,
+                "error": "invalid_notice",
+                "message": "Call escalate_reasoning again with a brief progress notice.",
+            }
+        language_mismatch = (
+            self._turn_response_language == "zh" and not _CHINESE_TEXT.search(notice)
+        ) or (
+            self._turn_response_language == "en"
+            and (not _LATIN_TEXT.search(notice) or _CHINESE_TEXT.search(notice))
+        )
+        if language_mismatch:
+            language = _RESPONSE_LANGUAGE_NAMES[self._turn_response_language]
+            return {
+                "ok": False,
+                "error": "notice_language_mismatch",
+                "message": (
+                    "Call escalate_reasoning again with a brief progress notice "
+                    f"written in {language}."
+                ),
+            }
         self._reasoning_turn = self.turn_id
         turn = self.turn_id
         self.journal.record("reasoning_started", turn_id=turn)
         try:
-            notice = _REASONING_NOTICES.get(
-                self._turn_response_language,
-                _REASONING_NOTICES["en"],
-            )
             await self.session.say(notice, allow_interruptions=True)
             if not self._valid(context):
                 return {"ok": False, "error": "stale_response"}

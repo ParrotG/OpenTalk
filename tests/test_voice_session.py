@@ -150,9 +150,16 @@ def test_text_entrypoint_reads_pipe_and_saves(tmp_path, monkeypatch, capsys):
 def test_scoped_reasoning_then_default_model_resumes(tmp_path):
     config = replace(load_voice_config(), log_directory=tmp_path / "logs")
     complex_request = "请比较这两个复杂方案"
-    main = ScriptedLLM({complex_request: ("escalate_reasoning", {
-        "task": "Compare the supplied options.",
-    })}, replies={complex_request: "这是比较结果。"})
+    main = ScriptedLLM({complex_request: [
+        ("escalate_reasoning", {
+            "task": "Compare the supplied options.",
+            "message": "I will compare the two options carefully.",
+        }),
+        ("escalate_reasoning", {
+            "task": "Compare the supplied options.",
+            "message": "我会仔细比较这两个方案，请稍等。",
+        }),
+    ]}, replies={complex_request: "这是比较结果。"})
     strong = ScriptedLLM()
 
     async def scenario():
@@ -162,8 +169,9 @@ def test_scoped_reasoning_then_default_model_resumes(tmp_path):
             await asyncio.wait_for(session.run(user_input=complex_request), timeout=5)
             assistant_messages = [item.text_content for item in session.history.items
                                   if item.type == "message" and item.role == "assistant"]
-            assert "请稍等，我会更仔细地分析这个问题。" in assistant_messages
-            assert len(main.requests) == 2
+            assert "I will compare the two options carefully." not in assistant_messages
+            assert "我会仔细比较这两个方案，请稍等。" in assistant_messages
+            assert len(main.requests) == 3
             assert all(
                 "Respond in Chinese for this entire turn" in request["system_text"]
                 for request in main.requests

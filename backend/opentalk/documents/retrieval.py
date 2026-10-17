@@ -325,24 +325,27 @@ class LazyRetrievalService:
                 self._config = load_rag_config().retrieval
             return self._config
 
-    def _get(self) -> RetrievalService:
-        with self._lock:
-            if self._service is None:
-                rag_config = load_rag_config()
-                self._config = rag_config.retrieval
-                self._service = RetrievalService(
-                    provider=create_embedding_provider(rag_config.embedding),
-                    store=QdrantVectorStore(rag_config.vector_store),
-                    config=rag_config.retrieval,
-                    storage_root=load_document_config().storage_root,
-                )
-            return self._service
+    def _get_locked(self) -> RetrievalService:
+        if self._service is None:
+            rag_config = load_rag_config()
+            self._config = rag_config.retrieval
+            self._service = RetrievalService(
+                provider=create_embedding_provider(rag_config.embedding),
+                store=QdrantVectorStore(rag_config.vector_store),
+                config=rag_config.retrieval,
+                storage_root=load_document_config().storage_root,
+            )
+        return self._service
 
     def search(self, query: str, **options: Any) -> RetrievalResponse:
-        return self._get().search(query, **options)
+        # A query arriving during background warmup must reuse and wait for that
+        # initialization instead of entering the embedding provider concurrently.
+        with self._lock:
+            return self._get_locked().search(query, **options)
 
     def warmup(self) -> None:
-        self._get().warmup()
+        with self._lock:
+            self._get_locked().warmup()
 
     def close(self) -> None:
         with self._lock:

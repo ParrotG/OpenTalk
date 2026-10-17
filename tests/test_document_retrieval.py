@@ -1,7 +1,9 @@
+import threading
+
 import pytest
 
 from opentalk.documents.lexical import SparseVector, encode_lexical, lexical_tokens
-from opentalk.documents.retrieval import RetrievalService
+from opentalk.documents.retrieval import LazyRetrievalService, RetrievalService
 from opentalk.documents.vector_config import RetrievalConfig
 from opentalk.documents.vector_store import VectorSearchHit
 
@@ -168,6 +170,38 @@ def test_retrieval_warmup_initializes_query_model_without_vector_store(tmp_path)
 
     assert provider.queries == ["OpenTalk retrieval warmup"]
     assert store.hybrid_call is None
+
+
+def test_lazy_retrieval_waits_for_background_warmup_before_search():
+    warmup_started = threading.Event()
+    warmup_release = threading.Event()
+    search_started = threading.Event()
+
+    class BlockingService:
+        def warmup(self):
+            warmup_started.set()
+            warmup_release.wait(timeout=2)
+
+        def search(self, query, **options):
+            search_started.set()
+            return query, options
+
+    service = LazyRetrievalService()
+    service._service = BlockingService()
+    warmup = threading.Thread(target=service.warmup)
+    query_result = []
+    query = threading.Thread(target=lambda: query_result.append(service.search("question")))
+
+    warmup.start()
+    assert warmup_started.wait(timeout=1)
+    query.start()
+    assert not search_started.wait(timeout=0.05)
+
+    warmup_release.set()
+    warmup.join(timeout=1)
+    query.join(timeout=1)
+
+    assert query_result == [("question", {})]
 
 
 def test_retrieval_falls_back_to_surrounding_leaves_when_parent_is_missing(tmp_path):
