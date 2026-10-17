@@ -152,7 +152,6 @@ def test_scoped_reasoning_then_default_model_resumes(tmp_path):
     complex_request = "请比较这两个复杂方案"
     main = ScriptedLLM({complex_request: ("escalate_reasoning", {
         "task": "Compare the supplied options.",
-        "message": "请稍等，我会更仔细地分析这个问题。",
     })}, replies={complex_request: "这是比较结果。"})
     strong = ScriptedLLM()
 
@@ -164,6 +163,12 @@ def test_scoped_reasoning_then_default_model_resumes(tmp_path):
             assistant_messages = [item.text_content for item in session.history.items
                                   if item.type == "message" and item.role == "assistant"]
             assert "请稍等，我会更仔细地分析这个问题。" in assistant_messages
+            assert len(main.requests) == 2
+            assert all(
+                "Respond in Chinese for this entire turn" in request["system_text"]
+                for request in main.requests
+            )
+            assert "Respond in Chinese for this entire turn" in strong.requests[0]["system_text"]
             await session.run(user_input="simple")
             assert len(strong.requests) == 1 and strong.requests[0]["tools"] == 0
             assert main.requests[-1]["text"] == "simple"

@@ -31,7 +31,16 @@ class ScriptedStream(llm.LLMStream):
                           and self._chat_ctx.items[index].role == "user")
         text = self._chat_ctx.items[user_index].text_content
         self._llm.started.set()
-        self._llm.requests.append({"text": text, "tools": len(self._tools)})
+        system_text = "\n".join(
+            item.text_content or ""
+            for item in self._chat_ctx.items
+            if item.type == "message" and item.role == "system"
+        )
+        self._llm.requests.append({
+            "text": text,
+            "tools": len(self._tools),
+            "system_text": system_text,
+        })
         outputs = [item for item in self._chat_ctx.items[user_index + 1:] if item.type == "function_call_output"]
         action = self._llm.actions.get(text)
         if isinstance(action, list):

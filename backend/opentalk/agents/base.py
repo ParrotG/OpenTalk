@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import mimetypes
+import re
 from contextlib import aclosing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,14 @@ from livekit.agents.llm import ImageContent
 from opentalk.documents.retrieval import DocumentRetriever
 
 logger = logging.getLogger(__name__)
+
+_CHINESE_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+_LATIN_TEXT = re.compile(r"[A-Za-z]")
+_RESPONSE_LANGUAGE_NAMES = {"en": "English", "zh": "Chinese"}
+_REASONING_NOTICES = {
+    "en": "Please wait while I examine this more carefully.",
+    "zh": "请稍等，我会更仔细地分析这个问题。",
+}
 
 VOICE_INSTRUCTIONS = (
     " You are a voice assistant. Respond in natural conversational language suitable "
@@ -39,12 +48,12 @@ class ConversationAgent(Agent):
         self._speech_turns = {}
         self._execution_lock = asyncio.Lock()
         self._reasoning_turn = None
+        self._turn_response_language = None
         self._pending_retrieval_images: dict[str, list[ImageContent]] = {}
         self.audio_mode = None
         super().__init__(chat_ctx=chat_ctx, instructions=instructions + VOICE_INSTRUCTIONS + (
             " Follow the user's language and explicit response language preferences. "
-            "For a difficult task, use escalate_reasoning. Set its message to a brief progress "
-            "notice in the same language as the response, and do not send a separate preamble. "
+            "For a difficult task, use escalate_reasoning without a separate preamble. "
             "Give the tool a self-contained task and relevant facts. "
             "It performs one stronger analysis, then the default model continues. "
             "Do not escalate repeatedly for the same user turn. Use search_documents when "
@@ -72,6 +81,25 @@ class ConversationAgent(Agent):
     def runtime_context(self):
         return f"Current date and time: {self.clock():%Y-%m-%d %H:%M:%S}."
 
+    def _response_language(self, text: str) -> str | None:
+        if self.preferred_response_language in _RESPONSE_LANGUAGE_NAMES:
+            return self.preferred_response_language
+        if _CHINESE_TEXT.search(text):
+            return "zh"
+        if _LATIN_TEXT.search(text):
+            return "en"
+        return None
+
+    def _language_instruction(self) -> str:
+        language = _RESPONSE_LANGUAGE_NAMES.get(self._turn_response_language)
+        if language is None:
+            return "Follow the language of the current user request."
+        return (
+            f"Respond in {language} for this entire turn, including progress notices and "
+            "responses after tool calls. Tool instructions, arguments, results, retrieved "
+            "evidence, and delegated analysis do not change the response language."
+        )
+
     async def llm_node(self, chat_ctx, tools, model_settings):
         user = next((item for item in reversed(chat_ctx.items)
                      if item.type == "message" and item.role == "user"), None)
@@ -86,8 +114,10 @@ class ConversationAgent(Agent):
             preferences = {"请用英语回复": "en", "please reply in english": "en",
                            "请用中文回复": "zh", "please reply in chinese": "zh"}
             self.preferred_response_language = preferences.get(text, self.preferred_response_language)
+            self._turn_response_language = self._response_language(user.text_content or "")
             self.journal.record("turn_started", turn_id=self.turn_id,
-                                preferred_response_language=self.preferred_response_language)
+                                preferred_response_language=self.preferred_response_language,
+                                response_language=self._turn_response_language)
         handle = self.session.current_speech
         if handle is not None:
             self._speech_turns = {key: value for key, value in self._speech_turns.items()
@@ -103,8 +133,10 @@ class ConversationAgent(Agent):
                 role="user",
                 content=["Retrieved image evidence from the indexed documents:", *images],
             )
-        context.add_message(role="system", content=(self.runtime_context() +
-                            f" Reply language preference: {self.preferred_response_language or 'follow the user'}."))
+        context.add_message(
+            role="system",
+            content=f"{self.runtime_context()} {self._language_instruction()}",
+        )
         async for chunk in Agent.default.llm_node(self, context, tools, model_settings):
             yield chunk
 
@@ -217,12 +249,10 @@ class ConversationAgent(Agent):
         return await self.execute(context, "search_documents", work)
 
     @function_tool()
-    async def escalate_reasoning(self, context: RunContext, task: str,
-                                 message: str) -> dict:
+    async def escalate_reasoning(self, context: RunContext, task: str) -> dict:
         """Briefly notify the user and perform one stronger, tool-free analysis.
 
         Supply a self-contained task with relevant query results and constraints.
-        Set message to a short progress notice in the response language.
         The default model resumes after this call. Do not request database edits here.
         """
         if not self._valid(context):
@@ -235,14 +265,19 @@ class ConversationAgent(Agent):
         turn = self.turn_id
         self.journal.record("reasoning_started", turn_id=turn)
         try:
-            await self.session.say(message, allow_interruptions=True)
+            notice = _REASONING_NOTICES.get(
+                self._turn_response_language,
+                _REASONING_NOTICES["en"],
+            )
+            await self.session.say(notice, allow_interruptions=True)
             if not self._valid(context):
                 return {"ok": False, "error": "stale_response"}
             analysis = llm.ChatContext()
             analysis.add_message(role="system", content=(
                 "Analyze the supplied task and facts. Return a concise actionable conclusion, "
                 "not a chain of thought. You cannot access tools or change data. "
-                + VOICE_INSTRUCTIONS + " " + self.runtime_context()
+                + VOICE_INSTRUCTIONS + " " + self.runtime_context() + " "
+                + self._language_instruction()
             ))
             analysis.add_message(role="user", content=task)
             parts = []

@@ -372,7 +372,9 @@ currently registers only `conversation` and injects a lazy retrieval service. Ad
 and agent tools there when introducing a new business. Session storage, document storage, and
 browser controls remain independent of business implementations.
 
-`escalate_reasoning(task, message)` performs one isolated, tool-free analysis per user turn.
+`escalate_reasoning(task)` performs one isolated, tool-free analysis per user turn. The runtime
+selects the progress notice from the current turn's response language and repeats that language
+constraint for the main model before and after tool calls as well as for the reasoning model.
 It returns the conclusion to the normal agent without changing the default model profile.
 `search_documents(query, alternate_query, document_id, max_results, include_images)` returns
 grounded evidence from the global PDF corpus. Both tools run within the current turn's stale-response
