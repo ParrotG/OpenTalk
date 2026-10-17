@@ -12,6 +12,16 @@ do_formula_enrichment = true
 do_code_enrichment = true
 do_chart_extraction = false
 
+[documents.heading_hierarchy]
+enabled = true
+use_bookmarks = true
+use_numbering = true
+use_style = true
+use_font_style = true
+style_size_tolerance = 0.05
+max_level = 6
+bookmark_match_threshold = 0.8
+
 [indexing]
 profile = "hierarchical-v2"
 chunk_max_chars = 1200

@@ -2,10 +2,22 @@
 
 import math
 import tomllib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from opentalk.config import PROJECT_ROOT
+
+
+@dataclass(frozen=True)
+class HeadingHierarchyConfig:
+    enabled: bool = True
+    use_bookmarks: bool = True
+    use_numbering: bool = True
+    use_style: bool = True
+    use_font_style: bool = True
+    style_size_tolerance: float = 0.05
+    max_level: int = 6
+    bookmark_match_threshold: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -22,6 +34,9 @@ class DocumentConfig:
     do_formula_enrichment: bool
     do_code_enrichment: bool
     do_chart_extraction: bool
+    heading_hierarchy: HeadingHierarchyConfig = field(
+        default_factory=HeadingHierarchyConfig
+    )
 
 
 @dataclass(frozen=True)
@@ -73,6 +88,41 @@ def load_document_config(path: Path | None = None) -> DocumentConfig:
         if any(type(data[name]) is not bool for name in boolean_names):
             raise ValueError("Document feature switches must be booleans.")
 
+        hierarchy_data = data.get("heading_hierarchy", {})
+        if not isinstance(hierarchy_data, dict):
+            raise ValueError("heading_hierarchy must be a table.")
+        hierarchy_defaults = HeadingHierarchyConfig()
+        hierarchy_values: dict[str, object] = {
+            name: hierarchy_data.get(name, getattr(hierarchy_defaults, name))
+            for name in asdict(hierarchy_defaults)
+        }
+        hierarchy_boolean_names = (
+            "enabled",
+            "use_bookmarks",
+            "use_numbering",
+            "use_style",
+            "use_font_style",
+        )
+        if any(type(hierarchy_values[name]) is not bool for name in hierarchy_boolean_names):
+            raise ValueError("Heading hierarchy feature switches must be booleans.")
+        tolerance = hierarchy_values["style_size_tolerance"]
+        if type(tolerance) not in (int, float) or not math.isfinite(tolerance) or tolerance < 0:
+            raise ValueError("heading_hierarchy.style_size_tolerance must be non-negative.")
+        max_level = hierarchy_values["max_level"]
+        if type(max_level) is not int or max_level <= 0:
+            raise ValueError("heading_hierarchy.max_level must be a positive integer.")
+        threshold = hierarchy_values["bookmark_match_threshold"]
+        if (
+            type(threshold) not in (int, float)
+            or not math.isfinite(threshold)
+            or not 0 <= threshold <= 1
+        ):
+            raise ValueError(
+                "heading_hierarchy.bookmark_match_threshold must be between 0 and 1."
+            )
+        hierarchy_values["style_size_tolerance"] = float(tolerance)
+        hierarchy_values["bookmark_match_threshold"] = float(threshold)
+
         return DocumentConfig(
             storage_root=storage_root,
             max_file_size_bytes=max_file_size_mb * 1024 * 1024,
@@ -80,6 +130,7 @@ def load_document_config(path: Path | None = None) -> DocumentConfig:
             document_timeout_seconds=float(timeout),
             images_scale=float(images_scale),
             table_mode=table_mode,
+            heading_hierarchy=HeadingHierarchyConfig(**hierarchy_values),
             **{name: data[name] for name in boolean_names},
         )
     except (OSError, KeyError, TypeError, ValueError) as error:

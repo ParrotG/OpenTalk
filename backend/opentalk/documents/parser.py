@@ -203,9 +203,14 @@ class DoclingParserBackend:
 
     def convert(self, source: Path, config: DocumentConfig) -> Any:
         from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+        from docling.datamodel.pipeline_options import (
+            HeadingHierarchyOptions,
+            PdfPipelineOptions,
+            TableFormerMode,
+        )
         from docling.document_converter import DocumentConverter, PdfFormatOption
 
+        hierarchy = config.heading_hierarchy
         options = PdfPipelineOptions(
             document_timeout=config.document_timeout_seconds,
             do_ocr=config.do_ocr,
@@ -217,8 +222,19 @@ class DoclingParserBackend:
             generate_page_images=True,
             generate_picture_images=True,
             generate_table_images=True,
+            generate_parsed_pages=hierarchy.enabled and hierarchy.use_style,
             images_scale=config.images_scale,
             enable_remote_services=False,
+        )
+        options.heading_hierarchy_options = HeadingHierarchyOptions(
+            enabled=hierarchy.enabled,
+            use_bookmarks=hierarchy.use_bookmarks,
+            use_numbering=hierarchy.use_numbering,
+            use_style=hierarchy.use_style,
+            use_font_style=hierarchy.use_font_style,
+            style_size_tolerance=hierarchy.style_size_tolerance,
+            max_level=hierarchy.max_level,
+            bookmark_match_threshold=hierarchy.bookmark_match_threshold,
         )
         options.table_structure_options.mode = TableFormerMode(config.table_mode)
         converter = DocumentConverter(
@@ -276,6 +292,10 @@ def parse_pdf(
         "do_formula_enrichment": config.do_formula_enrichment,
         "do_code_enrichment": config.do_code_enrichment,
         "do_chart_extraction": config.do_chart_extraction,
+        "heading_hierarchy": asdict(config.heading_hierarchy),
+        "generate_parsed_pages": (
+            config.heading_hierarchy.enabled and config.heading_hierarchy.use_style
+        ),
     }
     manifest: dict[str, Any] = {
         "schema_version": 1,

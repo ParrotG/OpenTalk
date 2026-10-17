@@ -1,11 +1,16 @@
 import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from opentalk.documents.config import DocumentConfig, load_document_config
-from opentalk.documents.parser import parse_pdf
+from opentalk.documents.config import (
+    DocumentConfig,
+    HeadingHierarchyConfig,
+    load_document_config,
+)
+from opentalk.documents.parser import DoclingParserBackend, parse_pdf
 
 
 class FakeImage:
@@ -130,6 +135,73 @@ def configuration(tmp_path: Path) -> DocumentConfig:
     )
 
 
+def test_docling_backend_enables_heading_hierarchy_with_parsed_pages(monkeypatch, tmp_path):
+    captured = {}
+
+    class PipelineOptions:
+        def __init__(self, **values):
+            captured["pipeline"] = values
+            self.table_structure_options = SimpleNamespace(mode=None)
+            self.heading_hierarchy_options = None
+
+    class HierarchyOptions:
+        def __init__(self, **values):
+            captured["hierarchy"] = values
+
+    class FormatOption:
+        def __init__(self, *, pipeline_options):
+            captured["options"] = pipeline_options
+
+    class Converter:
+        def __init__(self, **values):
+            captured["converter"] = values
+
+        def convert(self, source, **values):
+            captured["convert"] = {"source": source, **values}
+            return SimpleNamespace(document="converted-document")
+
+    modules = {
+        "docling": ModuleType("docling"),
+        "docling.datamodel": ModuleType("docling.datamodel"),
+        "docling.datamodel.base_models": ModuleType("docling.datamodel.base_models"),
+        "docling.datamodel.pipeline_options": ModuleType(
+            "docling.datamodel.pipeline_options"
+        ),
+        "docling.document_converter": ModuleType("docling.document_converter"),
+    }
+    modules["docling.datamodel.base_models"].InputFormat = SimpleNamespace(PDF="pdf")
+    pipeline_module = modules["docling.datamodel.pipeline_options"]
+    pipeline_module.HeadingHierarchyOptions = HierarchyOptions
+    pipeline_module.PdfPipelineOptions = PipelineOptions
+    pipeline_module.TableFormerMode = lambda value: value
+    converter_module = modules["docling.document_converter"]
+    converter_module.DocumentConverter = Converter
+    converter_module.PdfFormatOption = FormatOption
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    source = tmp_path / "source.pdf"
+    result = DoclingParserBackend.__new__(DoclingParserBackend).convert(
+        source,
+        configuration(tmp_path),
+    )
+
+    assert result == "converted-document"
+    assert captured["pipeline"]["generate_parsed_pages"] is True
+    assert captured["hierarchy"] == {
+        "enabled": True,
+        "use_bookmarks": True,
+        "use_numbering": True,
+        "use_style": True,
+        "use_font_style": True,
+        "style_size_tolerance": 0.05,
+        "max_level": 6,
+        "bookmark_match_threshold": 0.8,
+    }
+    assert captured["options"].heading_hierarchy_options.__class__ is HierarchyOptions
+    assert captured["convert"]["max_num_pages"] == 20
+
+
 def test_parse_pdf_saves_global_source_and_versioned_non_text_artifacts(tmp_path):
     source = tmp_path / "paper.pdf"
     source.write_bytes(b"%PDF-1.7\nfixture")
@@ -148,6 +220,8 @@ def test_parse_pdf_saves_global_source_and_versioned_non_text_artifacts(tmp_path
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "completed"
     assert manifest["parse_version"] == "test-version"
+    assert manifest["settings"]["heading_hierarchy"]["enabled"] is True
+    assert manifest["settings"]["generate_parsed_pages"] is True
     assert manifest["element_counts"] == {
         "formula": 1,
         "picture": 1,
@@ -225,6 +299,16 @@ do_picture_classification = true
 do_formula_enrichment = true
 do_code_enrichment = false
 do_chart_extraction = false
+
+[documents.heading_hierarchy]
+enabled = true
+use_bookmarks = true
+use_numbering = true
+use_style = false
+use_font_style = true
+style_size_tolerance = 0.04
+max_level = 5
+bookmark_match_threshold = 0.9
 """,
         encoding="utf-8",
     )
@@ -235,6 +319,16 @@ do_chart_extraction = false
     assert loaded.storage_root.parent.name == "data"
     assert loaded.max_file_size_bytes == 2 * 1024 * 1024
     assert loaded.table_mode == "fast"
+    assert loaded.heading_hierarchy == HeadingHierarchyConfig(
+        enabled=True,
+        use_bookmarks=True,
+        use_numbering=True,
+        use_style=False,
+        use_font_style=True,
+        style_size_tolerance=0.04,
+        max_level=5,
+        bookmark_match_threshold=0.9,
+    )
 
 
 def test_document_config_rejects_unknown_table_mode(tmp_path):
