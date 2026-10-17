@@ -249,6 +249,8 @@ class DoclingParserBackend:
         self.referenced_image_mode = ImageRefMode.REFERENCED
 
     def convert(self, source: Path, config: DocumentConfig) -> Any:
+        from docling.datamodel.accelerator_options import AcceleratorOptions
+        from docling.datamodel.backend_options import ThreadedDoclingParseBackendOptions
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import (
             HeadingHierarchyOptions,
@@ -258,8 +260,14 @@ class DoclingParserBackend:
         from docling.document_converter import DocumentConverter, PdfFormatOption
 
         hierarchy = config.heading_hierarchy
+        acceleration = config.acceleration
         options = PdfPipelineOptions(
             document_timeout=config.document_timeout_seconds,
+            accelerator_options=AcceleratorOptions(
+                device=acceleration.device,
+                num_threads=acceleration.num_threads,
+                cuda_use_flash_attention2=acceleration.cuda_use_flash_attention2,
+            ),
             do_ocr=config.do_ocr,
             do_picture_description=config.do_picture_description,
             do_picture_classification=config.do_picture_classification,
@@ -272,6 +280,16 @@ class DoclingParserBackend:
             generate_parsed_pages=hierarchy.enabled and hierarchy.use_style,
             images_scale=config.images_scale,
             enable_remote_services=False,
+            ocr_batch_size=acceleration.ocr_batch_size,
+            layout_batch_size=acceleration.layout_batch_size,
+            table_batch_size=acceleration.table_batch_size,
+            queue_max_size=acceleration.queue_max_size,
+            batch_polling_interval_seconds=(
+                acceleration.batch_polling_interval_seconds
+            ),
+        )
+        options.picture_description_options.batch_size = (
+            acceleration.picture_description_batch_size
         )
         options.heading_hierarchy_options = HeadingHierarchyOptions(
             enabled=hierarchy.enabled,
@@ -286,7 +304,16 @@ class DoclingParserBackend:
         options.table_structure_options.mode = TableFormerMode(config.table_mode)
         converter = DocumentConverter(
             allowed_formats=[InputFormat.PDF],
-            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)},
+            format_options={
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_options=options,
+                    backend_options=ThreadedDoclingParseBackendOptions(
+                        parser_threads=acceleration.parser_threads,
+                        render_pages=True,
+                        render_scale=config.images_scale,
+                    ),
+                )
+            },
         )
         result = converter.convert(
             source,
@@ -347,6 +374,7 @@ def parse_pdf(
         "do_formula_enrichment": config.do_formula_enrichment,
         "do_code_enrichment": config.do_code_enrichment,
         "do_chart_extraction": config.do_chart_extraction,
+        "acceleration": asdict(config.acceleration),
         "heading_hierarchy": asdict(config.heading_hierarchy),
         "generate_parsed_pages": (
             config.heading_hierarchy.enabled and config.heading_hierarchy.use_style

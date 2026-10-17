@@ -158,7 +158,11 @@ OPENTALK_TEST_EXTERNAL_SERVER=1 OPENTALK_LIVE_AUDIO_DIR=/tmp/opentalk-browser-au
 
 ### 8.4 Isolated Docker validation
 
-Normal local startup is `docker compose up -d --build --wait`; health does not prove media or real providers. Offline container tests mount no user data:
+Normal GPU-enabled startup is
+`docker compose -f compose.yaml -f compose.cuda.yaml up -d --build --wait`; health does not prove
+media, real providers, or CUDA execution. The base Compose file remains suitable for service tests
+that do not parse a document, or when the parser device is explicitly set to `auto` or `cpu`.
+Offline container tests mount no user data:
 
 ```bash
 docker compose -p opentalk-offline-tests --profile test run --build --rm --no-deps backend-tests
@@ -190,12 +194,13 @@ If uv/Playwright caches are unwritable, choose a writable cache and use it consi
 
 | Module | Test / tool / scenario | Expected result |
 | --- | --- | --- |
-| PDF/configuration | P-01: parser configuration/input cases; relative roots, limits, non-PDF, empty, oversized. | Resolve paths from project root; fail before Docling and create no document directory. |
+| PDF/configuration | P-01: parser configuration/input cases; relative roots, limits, non-PDF, empty, oversized, accelerator devices, positive thread/batch counts, and queue capacity. | Resolve paths from project root; reject invalid accelerator/concurrency settings; fail invalid input before Docling and create no document directory. |
 | PDF/artifacts | P-02: deterministic Docling document with headings, picture, table, formula. | Source stored by hash; independent version; consistent manifest, JSON, Markdown, JSONL, crops, HTML/CSV references. |
 | PDF/failure | P-03: injected conversion failure, Docling partial success, and success with a source/processed page-count mismatch. | Command fails and writes a diagnostic failed manifest; partial document artifacts are never published as completed. |
 | PDF/large document | P-03L: configuration boundary plus **manual pending** 600-1,000 page text/image-heavy PDF. | Accept at most 1,000 pages and 500 MiB; allow up to two hours for Docling; completed manifest reports equal positive source and processed page counts. |
 | PDF/real parsing | P-04 **manual pending**: normal text, scan, complex table, formula, picture, bilingual PDFs. | Inspect order, hierarchy, pages/coordinates, OCR, table structure, formula text, picture descriptions/crops; record version/time/warnings. File existence is not quality. |
 | PDF/heading hierarchy | P-04H **manual pending**: numbered, unnumbered, bookmarked, and printed-TOC PDFs. | Compare heading-level distributions and parent paths with the rendered PDF; record false nesting and false headings. Parsed-page style inference is enabled, but incorrect structure is not accepted by configuration alone. |
+| PDF/CUDA throughput | P-04C **manual pending**: parse the same representative image-heavy PDF once with `device = "cpu"` and once with `device = "cuda"`; monitor `nvidia-smi` and record elapsed time, peak GPU memory, pages, warnings, and artifact hashes/counts. | CUDA run shows a Docling/Python process using the GPU, especially during picture description; both manifests report the selected device and identical source/processed page counts. Concurrency improves or preserves throughput without missing/reordered artifacts. Tune batches downward on out-of-memory failure. |
 | PDF/Docker | P-04D **incomplete**: one-shot parser with read-only input and mounted host output. | Only global output changes; session/telemetry volumes unchanged; model cache separate. |
 | Preparation/structure | I-01: fixed inventory with nested headings, long text, picture/table/formula, false heading inside picture. | Document/section/context/leaf hierarchy, bounded chunks, complete path/parent/neighbor/page/coordinate/element references; picture heading does not change section. |
 | Preparation/fallback | I-02: headingless body and undescribed picture. | Synthetic section, retrievable body, asset-only picture without invented embedding text. |

@@ -1,6 +1,7 @@
 """Load and validate PDF parsing configuration."""
 
 import math
+import re
 import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -21,6 +22,20 @@ class HeadingHierarchyConfig:
 
 
 @dataclass(frozen=True)
+class DocumentAccelerationConfig:
+    device: str = "cuda"
+    num_threads: int = 8
+    parser_threads: int = 8
+    ocr_batch_size: int = 8
+    layout_batch_size: int = 8
+    table_batch_size: int = 4
+    picture_description_batch_size: int = 8
+    queue_max_size: int = 64
+    batch_polling_interval_seconds: float = 0.1
+    cuda_use_flash_attention2: bool = False
+
+
+@dataclass(frozen=True)
 class DocumentConfig:
     storage_root: Path
     max_file_size_bytes: int
@@ -34,6 +49,9 @@ class DocumentConfig:
     do_formula_enrichment: bool
     do_code_enrichment: bool
     do_chart_extraction: bool
+    acceleration: DocumentAccelerationConfig = field(
+        default_factory=DocumentAccelerationConfig
+    )
     heading_hierarchy: HeadingHierarchyConfig = field(
         default_factory=HeadingHierarchyConfig
     )
@@ -102,6 +120,58 @@ def load_document_config(path: Path | None = None) -> DocumentConfig:
         if any(type(data[name]) is not bool for name in boolean_names):
             raise ValueError("Document feature switches must be booleans.")
 
+        acceleration_data = data.get("acceleration", {})
+        if not isinstance(acceleration_data, dict):
+            raise ValueError("acceleration must be a table.")
+        acceleration_defaults = DocumentAccelerationConfig()
+        acceleration_values: dict[str, object] = {
+            name: acceleration_data.get(name, getattr(acceleration_defaults, name))
+            for name in asdict(acceleration_defaults)
+        }
+        device = acceleration_values["device"]
+        if not isinstance(device, str) or re.fullmatch(
+            r"(?:auto|cpu|mps|xpu|cuda(?::\d+)?)", device
+        ) is None:
+            raise ValueError("acceleration.device is invalid.")
+        acceleration_integer_names = (
+            "num_threads",
+            "parser_threads",
+            "ocr_batch_size",
+            "layout_batch_size",
+            "table_batch_size",
+            "picture_description_batch_size",
+            "queue_max_size",
+        )
+        if any(
+            type(acceleration_values[name]) is not int
+            or acceleration_values[name] <= 0
+            for name in acceleration_integer_names
+        ):
+            raise ValueError("Document acceleration integer settings must be positive.")
+        largest_batch = max(
+            int(acceleration_values[name])
+            for name in (
+                "ocr_batch_size",
+                "layout_batch_size",
+                "table_batch_size",
+            )
+        )
+        if acceleration_values["queue_max_size"] < largest_batch:
+            raise ValueError("acceleration.queue_max_size must cover every page batch.")
+        polling_interval = acceleration_values["batch_polling_interval_seconds"]
+        if (
+            type(polling_interval) not in (int, float)
+            or not math.isfinite(polling_interval)
+            or polling_interval <= 0
+        ):
+            raise ValueError(
+                "acceleration.batch_polling_interval_seconds must be positive and finite."
+            )
+        use_flash_attention = acceleration_values["cuda_use_flash_attention2"]
+        if type(use_flash_attention) is not bool:
+            raise ValueError("acceleration.cuda_use_flash_attention2 must be a boolean.")
+        acceleration_values["batch_polling_interval_seconds"] = float(polling_interval)
+
         hierarchy_data = data.get("heading_hierarchy", {})
         if not isinstance(hierarchy_data, dict):
             raise ValueError("heading_hierarchy must be a table.")
@@ -144,6 +214,7 @@ def load_document_config(path: Path | None = None) -> DocumentConfig:
             document_timeout_seconds=float(timeout),
             images_scale=float(images_scale),
             table_mode=table_mode,
+            acceleration=DocumentAccelerationConfig(**acceleration_values),
             heading_hierarchy=HeadingHierarchyConfig(**hierarchy_values),
             **{name: data[name] for name in boolean_names},
         )

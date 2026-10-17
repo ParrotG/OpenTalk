@@ -12,6 +12,18 @@ do_formula_enrichment = true
 do_code_enrichment = true
 do_chart_extraction = false
 
+[documents.acceleration]
+device = "cuda"
+num_threads = 8
+parser_threads = 8
+ocr_batch_size = 8
+layout_batch_size = 8
+table_batch_size = 4
+picture_description_batch_size = 8
+queue_max_size = 64
+batch_polling_interval_seconds = 0.1
+cuda_use_flash_attention2 = false
+
 [documents.heading_hierarchy]
 enabled = true
 use_bookmarks = true

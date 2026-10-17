@@ -6,6 +6,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from opentalk.documents.config import (
+    DocumentAccelerationConfig,
     DocumentConfig,
     HeadingHierarchyConfig,
     load_document_config,
@@ -166,15 +167,25 @@ def test_docling_backend_enables_heading_hierarchy_with_parsed_pages(monkeypatch
         def __init__(self, **values):
             captured["pipeline"] = values
             self.table_structure_options = SimpleNamespace(mode=None)
+            self.picture_description_options = SimpleNamespace(batch_size=None)
             self.heading_hierarchy_options = None
+
+    class AcceleratorOptions:
+        def __init__(self, **values):
+            captured["accelerator"] = values
+
+    class BackendOptions:
+        def __init__(self, **values):
+            captured["backend"] = values
 
     class HierarchyOptions:
         def __init__(self, **values):
             captured["hierarchy"] = values
 
     class FormatOption:
-        def __init__(self, *, pipeline_options):
+        def __init__(self, *, pipeline_options, backend_options):
             captured["options"] = pipeline_options
+            captured["backend_options"] = backend_options
 
     class Converter:
         def __init__(self, **values):
@@ -194,12 +205,24 @@ def test_docling_backend_enables_heading_hierarchy_with_parsed_pages(monkeypatch
     modules = {
         "docling": ModuleType("docling"),
         "docling.datamodel": ModuleType("docling.datamodel"),
+        "docling.datamodel.accelerator_options": ModuleType(
+            "docling.datamodel.accelerator_options"
+        ),
+        "docling.datamodel.backend_options": ModuleType(
+            "docling.datamodel.backend_options"
+        ),
         "docling.datamodel.base_models": ModuleType("docling.datamodel.base_models"),
         "docling.datamodel.pipeline_options": ModuleType(
             "docling.datamodel.pipeline_options"
         ),
         "docling.document_converter": ModuleType("docling.document_converter"),
     }
+    modules["docling.datamodel.accelerator_options"].AcceleratorOptions = (
+        AcceleratorOptions
+    )
+    modules["docling.datamodel.backend_options"].ThreadedDoclingParseBackendOptions = (
+        BackendOptions
+    )
     modules["docling.datamodel.base_models"].InputFormat = SimpleNamespace(PDF="pdf")
     pipeline_module = modules["docling.datamodel.pipeline_options"]
     pipeline_module.HeadingHierarchyOptions = HierarchyOptions
@@ -225,6 +248,33 @@ def test_docling_backend_enables_heading_hierarchy_with_parsed_pages(monkeypatch
         errors=({"error_message": "warning"},),
     )
     assert captured["pipeline"]["generate_parsed_pages"] is True
+    assert captured["accelerator"] == {
+        "device": "cuda",
+        "num_threads": 8,
+        "cuda_use_flash_attention2": False,
+    }
+    assert {
+        name: captured["pipeline"][name]
+        for name in (
+            "ocr_batch_size",
+            "layout_batch_size",
+            "table_batch_size",
+            "queue_max_size",
+            "batch_polling_interval_seconds",
+        )
+    } == {
+        "ocr_batch_size": 8,
+        "layout_batch_size": 8,
+        "table_batch_size": 4,
+        "queue_max_size": 64,
+        "batch_polling_interval_seconds": 0.1,
+    }
+    assert captured["options"].picture_description_options.batch_size == 8
+    assert captured["backend"] == {
+        "parser_threads": 8,
+        "render_pages": True,
+        "render_scale": 1.0,
+    }
     assert captured["hierarchy"] == {
         "enabled": True,
         "use_bookmarks": True,
@@ -259,6 +309,18 @@ def test_parse_pdf_saves_global_source_and_versioned_non_text_artifacts(tmp_path
     assert manifest["parse_version"] == "test-version"
     assert manifest["settings"]["heading_hierarchy"]["enabled"] is True
     assert manifest["settings"]["generate_parsed_pages"] is True
+    assert manifest["settings"]["acceleration"] == {
+        "device": "cuda",
+        "num_threads": 8,
+        "parser_threads": 8,
+        "ocr_batch_size": 8,
+        "layout_batch_size": 8,
+        "table_batch_size": 4,
+        "picture_description_batch_size": 8,
+        "queue_max_size": 64,
+        "batch_polling_interval_seconds": 0.1,
+        "cuda_use_flash_attention2": False,
+    }
     assert manifest["conversion"] == {
         "status": "success",
         "source_page_count": 1,
@@ -439,6 +501,99 @@ def test_default_document_capacity_covers_large_books():
     assert loaded.max_pages == 1000
     assert loaded.max_file_size_bytes == 500 * 1024 * 1024
     assert loaded.document_timeout_seconds == 7200.0
+    assert loaded.acceleration == DocumentAccelerationConfig()
+
+
+def test_document_acceleration_configuration_is_loaded(tmp_path):
+    path = tmp_path / "documents.toml"
+    path.write_text(
+        """[documents]
+storage_root = "data/documents"
+max_file_size_mb = 2
+max_pages = 10
+document_timeout_seconds = 15.0
+images_scale = 1.5
+table_mode = "fast"
+do_ocr = true
+do_picture_description = true
+do_picture_classification = true
+do_formula_enrichment = true
+do_code_enrichment = false
+do_chart_extraction = false
+
+[documents.acceleration]
+device = "cuda:1"
+num_threads = 6
+parser_threads = 5
+ocr_batch_size = 7
+layout_batch_size = 6
+table_batch_size = 3
+picture_description_batch_size = 4
+queue_max_size = 20
+batch_polling_interval_seconds = 0.25
+cuda_use_flash_attention2 = true
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_document_config(path)
+
+    assert loaded.acceleration == DocumentAccelerationConfig(
+        device="cuda:1",
+        num_threads=6,
+        parser_threads=5,
+        ocr_batch_size=7,
+        layout_batch_size=6,
+        table_batch_size=3,
+        picture_description_batch_size=4,
+        queue_max_size=20,
+        batch_polling_interval_seconds=0.25,
+        cuda_use_flash_attention2=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("acceleration", "message"),
+    (
+        ('device = "cuda:bad"', "acceleration.device"),
+        ("ocr_batch_size = 0", "integer settings"),
+        (
+            "ocr_batch_size = 9\nqueue_max_size = 8",
+            "queue_max_size",
+        ),
+        (
+            'batch_polling_interval_seconds = "fast"',
+            "batch_polling_interval_seconds",
+        ),
+    ),
+)
+def test_document_config_rejects_invalid_acceleration(
+    tmp_path, acceleration, message
+):
+    path = tmp_path / "documents.toml"
+    path.write_text(
+        f"""[documents]
+storage_root = "data/documents"
+max_file_size_mb = 2
+max_pages = 10
+document_timeout_seconds = 15.0
+images_scale = 1.5
+table_mode = "fast"
+do_ocr = true
+do_picture_description = true
+do_picture_classification = true
+do_formula_enrichment = true
+do_code_enrichment = false
+do_chart_extraction = false
+
+[documents.acceleration]
+{acceleration}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_document_config(path)
 
 
 def test_document_config_rejects_unknown_table_mode(tmp_path):
