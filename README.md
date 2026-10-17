@@ -368,7 +368,7 @@ application command.
 
 `ConversationAgent` owns language preferences, runtime context, stale-response validation,
 reasoning escalation, document retrieval, and guarded tool execution. `voice/factories.py`
-currently registers only `conversation` and injects a lazy retrieval service. Add a service adapter
+currently registers only `conversation` and injects the process-owned retrieval service. Add a service adapter
 and agent tools there when introducing a new business. Session storage, document storage, and
 browser controls remain independent of business implementations.
 
@@ -530,8 +530,10 @@ term variant. This keeps query transformation aware of dialogue intent without a
 call to every retrieval. The current implementation has no separate query router or unconstrained
 multi-query generator.
 
-The retrieval service validates the configured Qdrant schema and embedding space on first use, then
-initializes FastEmbed lazily so ordinary conversations do not load the embedding model. For every
+Each LiveKit job process preloads FastEmbed before accepting a conversation and reuses that service
+across sessions. This moves local model and ONNX initialization out of the first RAG turn. The
+warmup does not require a Qdrant collection, so a new installation can still start before its first
+document is indexed; schema and embedding-space validation remain part of the first actual search. For every
 query variant it creates one dense and one lexical query, asks Qdrant for bounded candidates, and
 uses RRF across all rankings. Optional filters can restrict document ID, parse version, index
 profile, and embedding profile.

@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+import logging
 import os
+import time
 
 from dotenv import load_dotenv
 from livekit.agents import AgentServer, JobContext, JobProcess, cli, room_io
 
 from opentalk.config import PROJECT_ROOT
+from opentalk.documents.retrieval import LazyRetrievalService
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionStore
 from opentalk.voice.config import load_voice_config
@@ -16,6 +19,7 @@ from opentalk.voice.room_control import RoomAudioMode, close_disconnected_sessio
 from opentalk.voice.session import create_vad, open_session
 
 load_dotenv(PROJECT_ROOT / ".env.local", override=False)
+logger = logging.getLogger(__name__)
 configuration = load_voice_config()
 server = AgentServer(ws_url=os.environ.get("LIVEKIT_URL", configuration.livekit_url),
                      host=os.environ.get("OPENTALK_WORKER_HEALTH_HOST", "127.0.0.1"),
@@ -26,6 +30,21 @@ server = AgentServer(ws_url=os.environ.get("LIVEKIT_URL", configuration.livekit_
 
 def prewarm(process: JobProcess):
     process.userdata["vad"] = create_vad(configuration)
+    retrieval = LazyRetrievalService()
+    process.userdata["retrieval"] = retrieval
+    started = time.monotonic()
+    try:
+        retrieval.warmup()
+    except Exception as error:
+        logger.exception(
+            "Retrieval model preload failed; the first document query will retry initialization.",
+            extra={"error_type": type(error).__name__},
+        )
+    else:
+        logger.info(
+            "Retrieval model preloaded.",
+            extra={"elapsed_seconds": round(time.monotonic() - started, 3)},
+        )
 
 
 server.setup_fnc = prewarm
@@ -51,7 +70,11 @@ async def entrypoint(context: JobContext):
         voice_enabled = metadata.get("voice_enabled", True)
     async with open_session(voice_config=configuration, session_config=session_config,
                             store=store, reservation=reservation, agent_key=agent_key,
-                            factory=agent_factory(agent_key), vad=context.proc.userdata.get("vad")) as (session, agent, journal):
+                            factory=agent_factory(
+                                agent_key,
+                                retrieval=context.proc.userdata.get("retrieval"),
+                                owns_retrieval=False,
+                            ), vad=context.proc.userdata.get("vad")) as (session, agent, journal):
         await context.connect()
         identity = f"user-{session.userdata.attempt_id}" if reservation else None
         mode = RoomAudioMode(session, enabled=voice_enabled)

@@ -135,6 +135,14 @@ class RetrievalService:
         self.config = config
         self.storage_root = storage_root.resolve()
         self._validated = False
+        self._warmed = False
+
+    def warmup(self) -> None:
+        """Initialize the local query model without requiring an indexed collection."""
+        if self._warmed:
+            return
+        self.provider.embed_query("OpenTalk retrieval warmup")
+        self._warmed = True
 
     def _validate_store(self) -> None:
         if self._validated:
@@ -332,6 +340,9 @@ class LazyRetrievalService:
 
     def search(self, query: str, **options: Any) -> RetrievalResponse:
         return self._get().search(query, **options)
+
+    def warmup(self) -> None:
+        self._get().warmup()
 
     def close(self) -> None:
         with self._lock:

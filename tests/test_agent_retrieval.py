@@ -104,6 +104,21 @@ def test_conversation_agent_exposes_retrieval_and_reasoning_tools():
     }
 
 
+def test_shared_retrieval_is_not_closed_by_agent():
+    retriever = Retriever()
+    agent = ConversationAgent(
+        instructions="Test agent.",
+        journal=Journal(),
+        state=SimpleNamespace(preferred_response_language=None),
+        retrieval=retriever,
+        owns_retrieval=False,
+    )
+
+    asyncio.run(agent.on_exit())
+
+    assert not retriever.closed
+
+
 def test_retrieved_image_is_converted_to_livekit_multimodal_content(tmp_path):
     image_path = tmp_path / "figure.png"
     image_path.write_bytes(b"png-fixture")

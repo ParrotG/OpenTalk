@@ -153,6 +153,23 @@ def test_retrieval_fuses_query_variants_and_expands_parent_with_image(tmp_path):
     assert "local_image_paths" not in response.to_dict()["evidence"][0]
 
 
+def test_retrieval_warmup_initializes_query_model_without_vector_store(tmp_path):
+    provider = FakeEmbeddingProvider()
+    store = FakeVectorStore(VectorSearchHit("point", 1.0, payload()))
+    service = RetrievalService(
+        provider=provider,
+        store=store,
+        config=retrieval_config(),
+        storage_root=tmp_path,
+    )
+
+    service.warmup()
+    service.warmup()
+
+    assert provider.queries == ["OpenTalk retrieval warmup"]
+    assert store.hybrid_call is None
+
+
 def test_retrieval_falls_back_to_surrounding_leaves_when_parent_is_missing(tmp_path):
     hit = VectorSearchHit(
         point_id="point-1",

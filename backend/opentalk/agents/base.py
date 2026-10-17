@@ -36,13 +36,14 @@ VOICE_INSTRUCTIONS = (
 class ConversationAgent(Agent):
     def __init__(self, *, instructions, journal, state, chat_ctx=None, context_max_items=120,
                  reasoning_model=None, reasoning_options=None, retrieval: DocumentRetriever | None = None,
-                 clock=None):
+                 owns_retrieval: bool = True, clock=None):
         self.journal = journal
         self.state = state
         self.context_max_items = context_max_items
         self.reasoning_model = reasoning_model
         self.reasoning_options = reasoning_options
         self.retrieval = retrieval
+        self.owns_retrieval = owns_retrieval
         self.clock = clock or (lambda: datetime.now(UTC))
         self.turn_id = None
         self._speech_turns = {}
@@ -301,7 +302,7 @@ class ConversationAgent(Agent):
 
     async def on_exit(self) -> None:
         try:
-            if self.retrieval is not None:
+            if self.retrieval is not None and self.owns_retrieval:
                 await asyncio.to_thread(self.retrieval.close)
         finally:
             await super().on_exit()
