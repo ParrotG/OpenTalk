@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from livekit.agents import AgentServer, JobContext, JobProcess, cli, room_io
 
 from opentalk.config import PROJECT_ROOT
+from opentalk.documents.access import DocumentAccessService
 from opentalk.documents.retrieval import LazyRetrievalService
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionStore
@@ -49,6 +50,7 @@ def prewarm(process: JobProcess) -> None:
     process.userdata["vad"] = create_vad(configuration)
     retrieval = LazyRetrievalService()
     process.userdata["retrieval"] = retrieval
+    process.userdata["document_access"] = DocumentAccessService()
     preload = threading.Thread(
         target=_preload_retrieval,
         args=(retrieval,),
@@ -85,6 +87,7 @@ async def entrypoint(context: JobContext):
                             factory=agent_factory(
                                 agent_key,
                                 retrieval=context.proc.userdata.get("retrieval"),
+                                document_access=context.proc.userdata.get("document_access"),
                                 owns_retrieval=False,
                             ), vad=context.proc.userdata.get("vad")) as (session, agent, journal):
         await context.connect()

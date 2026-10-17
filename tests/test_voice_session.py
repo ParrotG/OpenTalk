@@ -25,6 +25,8 @@ def test_language_preference_survives_mixed_input(tmp_path):
             assert isinstance(agent, ConversationAgent)
             assert {tool.info.name for tool in find_function_tools(type(agent))} == {
                 "escalate_reasoning",
+                "find_document_text",
+                "inspect_document",
                 "search_documents",
             }
             await session.start(agent=agent)

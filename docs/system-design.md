@@ -150,11 +150,11 @@ Default ports: frontend 3000, LiveKit 7880 / RTC TCP 7881 / UDP 7882, API 8080, 
 
 ### 7.1 Module responsibilities
 
-`opentalk.documents` contains four independently testable stages. The parser validates PDFs, manages global layout, invokes Docling, and exports artifacts. Indexing reads one completed parse and produces hierarchical nodes. Vector indexing uses an independent provider for dense vectors, creates sparse lexical vectors, and writes through a storage adapter. Retrieval runs dense/lexical RRF and expands parents or neighbors. None imports LiveKit, Agent, or session storage.
+`opentalk.documents` contains independently testable parser, preparation, vectorization, retrieval, and file-access modules. The parser validates PDFs, manages global layout, invokes Docling, and exports artifacts. Preparation reads one completed parse and produces hierarchical nodes plus a compact structure catalog. Vector indexing uses an independent provider for dense vectors, creates sparse lexical vectors, and writes through a storage adapter. Retrieval runs dense/lexical RRF and expands parents or neighbors. File access browses outlines/sections/pages and performs exact or fuzzy text location without Qdrant. None imports LiveKit, Agent, or session storage.
 
-`pipeline.process_pdf` composes the first three stages in data-flow order; the upload API invokes it in a controlled subprocess. `ConversationAgent.search_documents` is the LiveKit tool at the composition boundary and calls retrieval through a lazy service.
+`pipeline.process_pdf` composes parsing, preparation, and vectorization in data-flow order; the upload API invokes it in a controlled subprocess. `ConversationAgent.search_documents`, `inspect_document`, and `find_document_text` are the LiveKit tools at the composition boundary.
 
-The default Docling standard pipeline enables OCR, accurate table structure, page/picture/table crops, picture classification/description, formula enrichment, and code enrichment. Remote model services are disabled. A simple-PDF routing optimization is deferred until tests justify it.
+The default Docling standard pipeline enables OCR, accurate table structure, page/picture/table crops, picture classification/description, formula enrichment, code enrichment, and heading-level inference. `HeadingHierarchyOptions` uses bookmarks, numbering, then visual style; parsed pages remain available during conversion for the style signal. Remote model services are disabled. A simple-PDF routing optimization is deferred until tests justify it.
 
 ### 7.2 Interfaces and data contracts
 
@@ -179,13 +179,14 @@ data/documents/<document_id>/
     indexing/<profile>/
       index_manifest.json
       nodes.jsonl
+      structure.json
       vector_indexes/<embedding_profile>/
         manifest.json
 ```
 
 `document_id` is SHA-256 over PDF bytes. `parse_version` includes Docling version, UTC time, and a random suffix. `document.json` preserves Docling structure; `elements.jsonl` is an inspectable projection for downstream modules. Fields include `element_id, type, label, level, heading_level, content_layer, parent_id, child_ids, text, provenance, visual_path, table_outputs, metadata, annotations`. Traversal depth and semantic heading level remain separate, and content layer preserves Docling's body/furniture decision. Pictures use referenced files. Tables also export HTML/CSV, and formulas/pictures/tables save PNG crops where possible.
 
-Preparation follows `elements.jsonl` order and supplements heading semantics from `document.json` for older parse projections. Headings recognized inside pictures or tables do not change section boundaries. Hierarchy is `document → section → context → chunk/non-text`; long tables add `table → table_chunk`. Chunks and described non-text leaves are indexable; sections and bounded contexts exist only for expansion. Every retrievable node stores previous/next IDs for fallback.
+Preparation follows `elements.jsonl` order and supplements heading semantics from `document.json` for older parse projections. Headings recognized inside pictures or tables do not change section boundaries. Hierarchy is `document → nested section → context → chunk/non-text`; long tables add `table → table_chunk`. Chunks and described non-text leaves are indexable; sections and bounded contexts exist only for expansion. Every retrievable node stores previous/next IDs for fallback. The `hierarchical-v3` structure catalog stores stable section IDs, parent/child links, heading pages, direct/subtree page ranges, ordered direct node IDs, and page-to-node references without duplicating body text.
 
 Character limits come from `config/documents.toml [indexing]`. Character splitting stays tokenizer-independent for stage inspection; vectorization separately enforces the selected model tokenizer. Nodes retain element IDs, pages, coordinate provenance, section path, and asset references. A table parent stores complete content and bounded retrievable children. An undescribed picture retains an asset node without placeholder semantic text.
 
@@ -197,13 +198,17 @@ Lexical encoding normalizes NFKC and case. Chinese spans produce characters and 
 
 Results preserve the precise matched leaf. A valid parent becomes reasoning context; otherwise retrieval fetches previous/next retrievable nodes. Results include document/parse version, node type, section, pages, provenance, and assets. Image paths must resolve to existing files below the matching parse directory. The agent reads bounded image counts/sizes only when explicitly requested and adds them as temporary `ImageContent`; the session archive retains normal messages and textual tool results only.
 
+Structured access resolves the latest completed requested profile and caches at most four immutable document indexes per process. Outline calls return only one parent level. Section and page calls enforce page-span, item, and total-character limits and expose a continuation cursor, including an intra-node character offset for large tables or chunks. Page lookup uses stored integer page metadata rather than searching page-number text.
+
+Text location searches section titles and canonical direct content nodes. It tries raw substring and NFKC/case/whitespace-normalized substring matches first. `auto` invokes RapidFuzz local alignment only when no exact match exists; explicit `fuzzy` always permits approximate candidates. Exact classes, alignment score, title preference, stable document order, overlap deduplication, and a per-section cap determine ranking. Hybrid retrieval remains available for conceptual, paraphrased, and cross-language questions.
+
 ### 7.3 Technology details
 
-Docling is pinned in the optional `documents` dependency group. FastEmbed and Qdrant client are both default runtime dependencies and part of `rag`, because the conversation agent embeds queries. Default embedding is `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`, 512 tokens, collection `opentalk_documents_multilingual_mpnet_hybrid_v1`. Model/schema changes require a new profile or collection; the old dense-only collection is retained rather than migrated in place.
+Docling is pinned in the optional `documents` dependency group. FastEmbed, Qdrant client, and RapidFuzz are default runtime dependencies and part of `rag`, because the conversation agent embeds queries and can perform deterministic text location. Default embedding is `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`, 512 tokens, collection `opentalk_documents_multilingual_mpnet_hybrid_v1`. Model/schema changes require a new profile or collection; the old dense-only collection is retained rather than migrated in place.
 
 Qdrant is part of the default Compose stack with a `qdrant-data` volume. One-shot index commands still use the `rag` profile. Host directories mount document files, and model cache has a separate volume. `OPENTALK_QDRANT_URL` overrides the public local address. The worker mounts documents read-only and reuses the embedding cache.
 
-Each LiveKit job process creates one retrieval service during prewarm and starts a query embedding in a background thread. Process readiness and room connection do not wait for FastEmbed/ONNX initialization. A first query arriving during warmup waits for the same initialization and cannot load a second model concurrently. Warmup does not access the Qdrant collection; schema and embedding-space validation remain part of the first actual search. Warmup failure is logged and retried on first query without blocking non-document conversation.
+Each LiveKit job process creates one retrieval service and one lightweight file-access service during prewarm, then starts a query embedding in a background thread. Process readiness and room connection do not wait for FastEmbed/ONNX initialization. A first semantic query arriving during warmup waits for the same initialization and cannot load a second model concurrently. Structure and text access do not load the embedding model or contact Qdrant. Warmup does not access the Qdrant collection; schema and embedding-space validation remain part of the first actual semantic search.
 
 The frontend calls `GET /documents`, `POST /documents`, and `DELETE /documents/{id}` through the same-origin proxy. POST accepts one size-limited multipart file with a PDF signature, writes a temporary global file, and queues it immediately. One background slot prevents concurrent local Docling/embedding model loads; service shutdown terminates owned subprocesses. Listing reconstructs state from manifests and overlays current queued/processing state before manifests exist. A stale running manifest after restart does not permanently prevent deletion. Ready content is reused; failed re-upload can create a new parse. DELETE rejects queued/processing documents, then removes Qdrant points before files.
 

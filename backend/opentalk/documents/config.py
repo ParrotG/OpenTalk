@@ -56,6 +56,8 @@ class DocumentAccessConfig:
     default_results: int
     max_results: int
     per_section_limit: int
+    max_images: int
+    max_image_bytes: int
     fuzzy_score_cutoff: float
 
 
@@ -203,6 +205,8 @@ def load_document_access_config(path: Path | None = None) -> DocumentAccessConfi
             "default_results",
             "max_results",
             "per_section_limit",
+            "max_images",
+            "max_image_bytes",
         )
         if any(type(data[name]) is not int or data[name] <= 0 for name in integer_names):
             raise ValueError("Document access integer limits must be positive.")

@@ -194,6 +194,7 @@ If uv/Playwright caches are unwritable, choose a writable cache and use it consi
 | PDF/artifacts | P-02: deterministic Docling document with headings, picture, table, formula. | Source stored by hash; independent version; consistent manifest, JSON, Markdown, JSONL, crops, HTML/CSV references. |
 | PDF/failure | P-03: injected conversion failure. | Command fails and writes a failed manifest, never completed. |
 | PDF/real parsing | P-04 **manual pending**: normal text, scan, complex table, formula, picture, bilingual PDFs. | Inspect order, hierarchy, pages/coordinates, OCR, table structure, formula text, picture descriptions/crops; record version/time/warnings. File existence is not quality. |
+| PDF/heading hierarchy | P-04H **manual pending**: numbered, unnumbered, bookmarked, and printed-TOC PDFs. | Compare heading-level distributions and parent paths with the rendered PDF; record false nesting and false headings. Parsed-page style inference is enabled, but incorrect structure is not accepted by configuration alone. |
 | PDF/Docker | P-04D **incomplete**: one-shot parser with read-only input and mounted host output. | Only global output changes; session/telemetry volumes unchanged; model cache separate. |
 | Preparation/structure | I-01: fixed inventory with nested headings, long text, picture/table/formula, false heading inside picture. | Document/section/context/leaf hierarchy, bounded chunks, complete path/parent/neighbor/page/coordinate/element references; picture heading does not change section. |
 | Preparation/fallback | I-02: headingless body and undescribed picture. | Synthetic section, retrievable body, asset-only picture without invented embedding text. |
@@ -201,6 +202,7 @@ If uv/Playwright caches are unwritable, choose a writable cache and use it consi
 | Preparation/picture fields | I-03A: description/semantic fields plus model source, all classification candidates, and control tokens. | Caption/explicit semantics included; source/candidates/confidence/kind/control tokens excluded. |
 | Preparation/furniture | I-03B: explicit furniture/header/footer descendants plus repeated body text. | Explicit furniture excluded; repeated body retained; no positional/repetition inference. |
 | Preparation/real artifacts | I-04: run preparation/inspection on a P-04-approved parse. | `valid=true`, no structure/missing-asset error; manually sample sections, overlap, parent bounds, non-text description, pages. |
+| Preparation/catalog | I-05: nested section fixture with direct/subtree content, cross-page nodes, empty sections, and assets. | `structure.json` has valid stable references, compact section/page maps, distinct heading/direct/subtree ranges, and no copied body text. |
 | Embedding/contract | E-01: fake passage/query provider with wrong count/dimension/non-finite values and oversized input. | Correct methods; invalid vectors fail before write; oversized text fails visibly. |
 | Vector/idempotency | E-02: deterministic provider + in-memory Qdrant, index same JSONL twice. | Indexable nodes only; stable upsert count; complete parent/neighbor/page/provenance/sparse/assets. |
 | Vector/schema | E-03: reuse collection with different dimension/dense-only schema/profile/model. | Reject incompatible named dense/lexical schema and non-empty embedding-space mismatch before write. |
@@ -210,7 +212,9 @@ If uv/Playwright caches are unwritable, choose a writable cache and use it consi
 | Lexical/hybrid | R-01: multilingual terms, identifiers, named vectors, Qdrant RRF. | Stable encoding/idempotence; exact and semantic candidates both participate. |
 | Retrieval/hierarchy | R-02: valid parent, neighbor fallback, image, invalid limits. | Parent first; neighbors only without parent; complete pages/section/provenance/safe image; visible bounds errors/truncation. |
 | Retrieval/query variant | R-03: original, duplicate, and distinct alternate. | Original always retained; blank/duplicate removed; distinct alternate adds dense/lexical candidates. |
-| Agent/document tool | R-04: discovery, argument forwarding, result logging, close, unavailable service. | `search_documents` exposed; blocking work off event loop; page evidence; stable failures and ownership. |
+| Agent/document tool | R-04: discovery, argument forwarding, result logging, close, unavailable service. | All three document tools are exposed; blocking work stays off the event loop; results preserve locators; failures and ownership are stable. |
+| File access | R-04A: outline pagination, section direct/subtree cursors, page spans, large-node offsets, safe images, and missing artifacts. | Deterministic document order, enforced total bounds, stable continuation, page metadata rather than page-text matching, and no path escape. |
+| Exact/fuzzy text | R-04B: raw/normalized substring, Chinese/English text, title, identifier, OCR typo, short query, overlap duplicate, section/page filters, and excess matches. | Exact precedes fuzzy; `auto` falls back only without exact hits; cutoff, deduplication, per-section cap, result/character limits, and stable ordering hold. |
 | Retrieval/real quality | R-05 **manual pending**: fixed factual/paraphrase/cross-language/ID/table/formula/picture/irrelevant set. | Compare dense-only/hybrid top-k and expansion; record misses/false positives; verify requested image reaches multimodal model. |
 | Agent/end-to-end | R-06 **manual pending**: text CLI with fact, follow-up, chart, and out-of-document questions. | Agent calls tool, cites page-locatable evidence, does not invent. Casual chat does not initialize retrieval; image support depends on LLM. |
 | PDF/management API | P-05: streaming upload, signature/size, unwritable root, recovery after failure, global list/manifests. | Only global temp files; stable JSON errors; one rejection does not block next upload; queued/stage/failed/ready are distinct; no real model. |
@@ -224,6 +228,7 @@ uv sync --locked --inexact --group rag
 uv run --locked pytest -q \
   tests/test_document_parser.py \
   tests/test_document_indexing.py \
+  tests/test_document_access.py \
   tests/test_document_vector_index.py \
   tests/test_document_retrieval.py \
   tests/test_document_library.py \
@@ -240,11 +245,11 @@ For E-04/E-05, use manually reviewed artifacts and fixed Qdrant:
 
 ```bash
 docker compose --profile rag up -d --wait qdrant
-INDEX_PATH=data/documents/<document-id>/parses/<parse-version>/indexing/hierarchical-v2
+INDEX_PATH=data/documents/<document-id>/parses/<parse-version>/indexing/hierarchical-v3
 PYTHONPATH=backend uv run --locked --group rag python -m opentalk.documents.index_vectors "$INDEX_PATH"
 PYTHONPATH=backend uv run --locked --group rag python -m opentalk.documents.search_vectors \
   "<evaluation-query>" --document-id <document-id> --parse-version <parse-version> \
-  --index-profile hierarchical-v2 --limit 10
+  --index-profile hierarchical-v3 --limit 10
 ```
 
 If indexing reports token overflow, retain the failed manifest and create a new preparation profile with smaller chunks. Never raise the configured limit past the real model limit. Record query, expected nodes/pages, actual top-k/scores, misses, and false positives. The low-level dense command does not accept hybrid retrieval, parent expansion, or agent-answer quality.
@@ -255,10 +260,25 @@ R-05 uses the hybrid collection. Keep the old `opentalk_documents_multilingual_m
 PYTHONPATH=backend uv run --locked python -m opentalk.documents.retrieve \
   "<standalone-query>" --alternate-query "<optional-alternate-query>" \
   --document-id <document-id> --parse-version <parse-version> \
-  --index-profile hierarchical-v2 --limit 6
+  --index-profile hierarchical-v3 --limit 6
 ```
 
 Inspect `queries`, `result_count`, and each evidence object's `matched_text`, `context_text`, `expansion`, `page_numbers`, `section_path`, `provenance`, `asset_references`, and `local_image_paths`. A valid parent yields `expansion=parent`; only missing hierarchy yields `neighbors`. Compare at least the same query against dense-only top-k and record both useful and false additions.
+
+Inspect structure and deterministic text location without Qdrant:
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.query inspect \
+  <document-id> --view outline
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.query inspect \
+  <document-id> --view section --section-id <section-id> --section-scope subtree
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.query inspect \
+  <document-id> --view page --page-start 12 --page-end 13
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.query find \
+  <document-id> "exact phrase or OCR variant" --match-mode auto
+```
+
+For outline output, verify parent/child IDs, levels, heading pages, and direct/subtree page ranges. For section/page output, follow `next_cursor` until `truncated=false` and verify that the combined text stays in document order without exceeding each call's budget. For text lookup, record `requested_match_mode`, `applied_match_mode`, match class/score, section/page locator, false positives, deduplication, and whether an exact hit incorrectly triggered fuzzy results.
 
 For R-06 keep Qdrant running and the hybrid collection indexed, then:
 
@@ -266,4 +286,4 @@ For R-06 keep Qdrant running and the hybrid collection indexed, then:
 PYTHONPATH=backend uv run --locked python -m opentalk.voice.text --agent conversation
 ```
 
-Ask an in-document fact, a paraphrased follow-up, an exact identifier, table/formula question, picture question, and an out-of-document question. Session diagnostics should contain `business_result` with `name=search_documents`; answers should mention relevant pages and remain bounded by evidence. Images enter temporary multimodal context only with `include_images=true` and a capable provider; session history must not contain image base64.
+Ask an in-document fact, a paraphrased follow-up, an exact identifier, a misspelled/OCR-like phrase, an outline/section request, an explicit page/chart request, a table/formula question, a picture question, and an out-of-document question. Session diagnostics should show the intended `search_documents`, `find_document_text`, or `inspect_document` route. Answers should mention relevant pages and remain bounded by evidence. Images enter temporary multimodal context only with `include_images=true` and a capable provider; session history must not contain image base64.

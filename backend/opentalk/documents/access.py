@@ -6,7 +6,7 @@ import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from rapidfuzz import fuzz
 
@@ -34,6 +34,19 @@ class DocumentAccessResponse:
 
     def image_paths(self) -> list[Path]:
         return list(self._image_paths)
+
+
+class DocumentAccessor(Protocol):
+    config: DocumentAccessConfig
+
+    def inspect(self, document_id: str, **options: Any) -> DocumentAccessResponse: ...
+
+    def find_text(
+        self,
+        document_id: str,
+        query: str,
+        **options: Any,
+    ) -> DocumentAccessResponse: ...
 
 
 @dataclass(frozen=True)

@@ -36,6 +36,33 @@ class Retriever:
         self.closed = True
 
 
+class AccessResponse:
+    def __init__(self, value):
+        self.value = value
+
+    def to_dict(self):
+        return {"ok": True, **self.value}
+
+    @staticmethod
+    def image_paths():
+        return []
+
+
+class Accessor:
+    config = SimpleNamespace(max_images=2, max_image_bytes=1024)
+
+    def __init__(self):
+        self.calls = []
+
+    def inspect(self, document_id, **options):
+        self.calls.append(("inspect", document_id, options))
+        return AccessResponse({"view": options["view"], "items": []})
+
+    def find_text(self, document_id, query, **options):
+        self.calls.append(("find", document_id, query, options))
+        return AccessResponse({"query": query, "matches": []})
+
+
 class Journal:
     def __init__(self):
         self.events = []
@@ -100,8 +127,72 @@ def test_document_retrieval_tool_returns_grounded_evidence_and_closes(monkeypatc
 def test_conversation_agent_exposes_retrieval_and_reasoning_tools():
     assert {tool.info.name for tool in find_function_tools(ConversationAgent)} == {
         "escalate_reasoning",
+        "find_document_text",
+        "inspect_document",
         "search_documents",
     }
+
+
+def test_structured_document_tools_forward_bounded_queries(monkeypatch):
+    async def immediate(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", immediate)
+    accessor = Accessor()
+    agent = ConversationAgent(
+        instructions="Test agent.",
+        journal=Journal(),
+        state=SimpleNamespace(preferred_response_language=None),
+        document_access=accessor,
+    )
+
+    async def scenario():
+        inspected = await agent.inspect_document(
+            context_for(agent),
+            document_id="document-1",
+            view="page",
+            page_start=3,
+            cursor="1:20",
+        )
+        found = await agent.find_document_text(
+            context_for(agent),
+            document_id="document-1",
+            query="known phrase",
+            match_mode="substring",
+            section_id="section-1",
+            max_results=4,
+        )
+        assert inspected["ok"] and inspected["images_attached"] == 0
+        assert found["ok"] and found["images_attached"] == 0
+
+    asyncio.run(scenario())
+    assert accessor.calls == [
+        (
+            "inspect",
+            "document-1",
+            {
+                "view": "page",
+                "section_id": None,
+                "parent_section_id": None,
+                "section_scope": "direct",
+                "page_start": 3,
+                "page_end": None,
+                "cursor": "1:20",
+            },
+        ),
+        (
+            "find",
+            "document-1",
+            "known phrase",
+            {
+                "match_mode": "substring",
+                "section_id": "section-1",
+                "page_start": None,
+                "page_end": None,
+                "limit": 4,
+            },
+        ),
+    ]
 
 
 def test_shared_retrieval_is_not_closed_by_agent():

@@ -26,6 +26,7 @@ def test_worker_prewarm_starts_retrieval_initialization_in_background(monkeypatc
     assert started.wait(timeout=1)
     assert process.userdata["vad"] == "vad"
     assert process.userdata["retrieval"] is retrieval
+    assert process.userdata["document_access"] is not None
     assert preload.is_alive()
 
     release.set()

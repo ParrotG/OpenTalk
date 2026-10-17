@@ -12,6 +12,7 @@ from pathlib import Path
 from livekit.agents import Agent, RunContext, function_tool, llm
 from livekit.agents.llm import ImageContent
 
+from opentalk.documents.access import DocumentAccessor, DocumentAccessResponse
 from opentalk.documents.retrieval import DocumentRetriever
 
 logger = logging.getLogger(__name__)
@@ -30,15 +31,28 @@ VOICE_INSTRUCTIONS = (
 
 
 class ConversationAgent(Agent):
-    def __init__(self, *, instructions, journal, state, chat_ctx=None, context_max_items=120,
-                 reasoning_model=None, reasoning_options=None, retrieval: DocumentRetriever | None = None,
-                 owns_retrieval: bool = True, clock=None):
+    def __init__(
+        self,
+        *,
+        instructions,
+        journal,
+        state,
+        chat_ctx=None,
+        context_max_items=120,
+        reasoning_model=None,
+        reasoning_options=None,
+        retrieval: DocumentRetriever | None = None,
+        document_access: DocumentAccessor | None = None,
+        owns_retrieval: bool = True,
+        clock=None,
+    ):
         self.journal = journal
         self.state = state
         self.context_max_items = context_max_items
         self.reasoning_model = reasoning_model
         self.reasoning_options = reasoning_options
         self.retrieval = retrieval
+        self.document_access = document_access
         self.owns_retrieval = owns_retrieval
         self.clock = clock or (lambda: datetime.now(UTC))
         self.turn_id = None
@@ -54,11 +68,14 @@ class ConversationAgent(Agent):
             "Give the tool a brief, natural progress notice in the response language, plus "
             "a self-contained task and relevant facts. "
             "It performs one stronger analysis, then the default model continues. "
-            "Do not escalate repeatedly for the same user turn. Use search_documents when "
-            "the answer may depend on uploaded documents. Form a standalone search query "
-            "from the user's request and relevant conversation context. Add one alternate "
-            "wording only when it may improve recall. Base document claims on returned "
-            "evidence and mention the document page when available."
+            "Do not escalate repeatedly for the same user turn. For uploaded documents, use "
+            "inspect_document for explicit pages, outlines, or sections; use "
+            "find_document_text for quoted text, titles, identifiers, or likely spelling and "
+            "OCR errors; use search_documents for conceptual, paraphrased, or cross-language "
+            "questions. You may locate a section with one tool and read it with another. Form "
+            "standalone semantic search queries and add one alternate wording only when it may "
+            "improve recall. Base document claims on returned evidence and mention the page "
+            "when available."
         ))
 
     @property
@@ -245,6 +262,160 @@ class ConversationAgent(Agent):
                 }
 
         return await self.execute(context, "search_documents", work)
+
+    @function_tool()
+    async def inspect_document(
+        self,
+        context: RunContext,
+        document_id: str,
+        view: str,
+        section_id: str = "",
+        parent_section_id: str = "",
+        section_scope: str = "direct",
+        page_start: int = 0,
+        page_end: int = 0,
+        cursor: str = "",
+        include_images: bool = False,
+    ) -> dict:
+        """Browse a PDF outline or read bounded content by section or page.
+
+        Use view=outline to list root sections, or set parent_section_id to list one
+        section's children. Use view=section with section_id and direct or subtree scope.
+        Use view=page with a one-based page_start and optional page_end. Follow next_cursor
+        until truncated is false. Set include_images only for visual inspection.
+        """
+        if self.document_access is None:
+            return {
+                "ok": False,
+                "error": "document_access_unavailable",
+                "message": "Structured document access is unavailable.",
+            }
+        request_turn = self._speech_turns.get(context.speech_handle.id)
+
+        async def work() -> dict:
+            try:
+                response = await asyncio.to_thread(
+                    self.document_access.inspect,
+                    document_id,
+                    view=view,
+                    section_id=section_id or None,
+                    parent_section_id=parent_section_id or None,
+                    section_scope=section_scope,
+                    page_start=page_start or None,
+                    page_end=page_end or None,
+                    cursor=cursor,
+                )
+                result = response.to_dict()
+                result["images_attached"] = await self._attach_access_images(
+                    response,
+                    request_turn=request_turn,
+                    include_images=include_images,
+                )
+                return result
+            except ValueError as error:
+                return {
+                    "ok": False,
+                    "error": "invalid_document_query",
+                    "message": str(error),
+                }
+            except Exception as error:
+                logger.exception(
+                    "Structured document access failed.",
+                    extra={"error_type": type(error).__name__},
+                )
+                return {
+                    "ok": False,
+                    "error": "document_access_failed",
+                    "message": "Structured document access failed. Check service diagnostics.",
+                }
+
+        return await self.execute(context, "inspect_document", work)
+
+    @function_tool()
+    async def find_document_text(
+        self,
+        context: RunContext,
+        document_id: str,
+        query: str,
+        match_mode: str = "auto",
+        section_id: str = "",
+        page_start: int = 0,
+        page_end: int = 0,
+        max_results: int = 8,
+        include_images: bool = False,
+    ) -> dict:
+        """Find known text, titles, identifiers, or near spellings in one PDF.
+
+        Use auto for exact normalized substring matching with fuzzy fallback. Use substring
+        when approximate matches are unwanted, and fuzzy for likely spelling or OCR errors.
+        Optional section and page arguments constrain the search. Use search_documents
+        instead when the request is conceptual or uses different wording.
+        """
+        if self.document_access is None:
+            return {
+                "ok": False,
+                "error": "document_access_unavailable",
+                "message": "Document text lookup is unavailable.",
+            }
+        request_turn = self._speech_turns.get(context.speech_handle.id)
+
+        async def work() -> dict:
+            try:
+                response = await asyncio.to_thread(
+                    self.document_access.find_text,
+                    document_id,
+                    query,
+                    match_mode=match_mode,
+                    section_id=section_id or None,
+                    page_start=page_start or None,
+                    page_end=page_end or None,
+                    limit=max_results,
+                )
+                result = response.to_dict()
+                result["images_attached"] = await self._attach_access_images(
+                    response,
+                    request_turn=request_turn,
+                    include_images=include_images,
+                )
+                return result
+            except ValueError as error:
+                return {
+                    "ok": False,
+                    "error": "invalid_document_query",
+                    "message": str(error),
+                }
+            except Exception as error:
+                logger.exception(
+                    "Document text lookup failed.",
+                    extra={"error_type": type(error).__name__},
+                )
+                return {
+                    "ok": False,
+                    "error": "document_access_failed",
+                    "message": "Document text lookup failed. Check service diagnostics.",
+                }
+
+        return await self.execute(context, "find_document_text", work)
+
+    async def _attach_access_images(
+        self,
+        response: DocumentAccessResponse,
+        *,
+        request_turn: str | None,
+        include_images: bool,
+    ) -> int:
+        if not include_images or request_turn is None or self.document_access is None:
+            return 0
+        images = await asyncio.to_thread(
+            self._load_images,
+            response.image_paths(),
+            maximum=self.document_access.config.max_images,
+            max_bytes=self.document_access.config.max_image_bytes,
+        )
+        if not images:
+            return 0
+        self._pending_retrieval_images[request_turn] = images
+        return len(images)
 
     @function_tool()
     async def escalate_reasoning(self, context: RunContext, task: str, message: str) -> dict:

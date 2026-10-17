@@ -120,6 +120,7 @@ flowchart TB
         FILES[("Versioned file artifacts<br/>PDF, JSON/JSONL, Markdown, images, tables, manifests")]
         QD[("Qdrant<br/>dense + lexical vectors and retrieval payloads")]
         RET["Lazy retrieval service<br/>hybrid fusion + context expansion"]
+        ACCESS["File-side document access<br/>outline, section, page, exact/fuzzy text"]
     end
 
     subgraph Providers["Streaming providers, independently replaceable"]
@@ -150,9 +151,12 @@ flowchart TB
     AS --> TEL
     AG -.->|one isolated analysis request| LLM
     AG -->|search_documents| RET
+    AG -->|inspect_document / find_document_text| ACCESS
     RET --> QD
     RET -->|resolve referenced visuals| FILES
     RET -->|page-located text and optional images| AG
+    ACCESS --> FILES
+    ACCESS -->|bounded ordered text and optional images| AG
 ```
 
 The ingestion path keeps parsing, hierarchy preparation, and vector persistence independently
@@ -162,10 +166,10 @@ inspectable:
 flowchart LR
     UP["Browser upload or CLI PDF"] --> VALIDATE["Stream validation<br/>size, PDF signature, SHA-256"]
     VALIDATE --> SOURCE["Global source.pdf<br/>document ID = content hash"]
-    SOURCE --> DOCLING["Docling conversion<br/>OCR, structure, pictures, tables, formulas, code"]
+    SOURCE --> DOCLING["Docling conversion<br/>OCR, heading-level inference, pictures,<br/>tables, formulas, code"]
     DOCLING --> PARSE["Immutable parse version<br/>document.json, document.md, elements.jsonl,<br/>referenced assets, visual crops, table HTML/CSV"]
-    PARSE --> PREP["hierarchical-v2 preparation<br/>document → section → context → leaf"]
-    PREP --> NODES["nodes.jsonl + index manifest<br/>stable links, pages, provenance, asset references"]
+    PARSE --> PREP["hierarchical-v3 preparation<br/>document → nested section → context → leaf"]
+    PREP --> NODES["nodes.jsonl + structure.json + index manifest<br/>stable links, page map, provenance, asset references"]
     NODES --> DENSE["FastEmbed passage vectors<br/>multilingual MPNet"]
     NODES --> SPARSE["Deterministic multilingual<br/>lexical sparse vectors"]
     DENSE --> QDRANT[("Qdrant collection")]
@@ -177,15 +181,22 @@ At query time the agent controls retrieval, while the retrieval service keeps ra
 assembly deterministic:
 
 ```mermaid
-flowchart LR
-    USER["User question"] --> LLMQ["Conversation LLM<br/>decide whether retrieval is needed"]
-    LLMQ --> TOOL["search_documents<br/>standalone query, optional alternate query,<br/>document filter, result limit, image flag"]
+flowchart TB
+    USER["User question"] --> LLMQ["Conversation LLM<br/>choose an access path"]
+    LLMQ --> ROUTE{"Question form"}
+    ROUTE -->|concept, paraphrase, cross-language| TOOL["search_documents<br/>hybrid semantic discovery"]
+    ROUTE -->|known phrase, title, identifier, OCR error| FIND["find_document_text<br/>substring first, RapidFuzz fallback"]
+    ROUTE -->|outline, section, explicit page| BROWSE["inspect_document<br/>cursor-based file access"]
     TOOL --> QUERY["Dense query embedding<br/>+ lexical sparse encoding"]
     QUERY --> RRF["Qdrant prefetch<br/>RRF over all dense and lexical rankings"]
     RRF --> LEAF["Precise leaf hits"]
     LEAF --> EXPAND["Expand stored parent context<br/>or previous/current/next leaves"]
     EXPAND --> TEXT["Bounded evidence<br/>text, section path, pages, provenance"]
     EXPAND --> IMAGE["Optional referenced images<br/>validated local paths and size limits"]
+    FIND --> FILEEVIDENCE["Ranked bounded matches<br/>section and page locators"]
+    BROWSE --> FILEEVIDENCE
+    FILEEVIDENCE --> TEXT
+    FILEEVIDENCE --> IMAGE
     TEXT --> LLMQ
     IMAGE --> MM["LiveKit ImageContent"] --> LLMQ
     LLMQ --> ANSWER["Grounded spoken/text answer"]
@@ -270,6 +281,13 @@ OCR, accurate TableFormer structure extraction, picture description/classificati
 enrichment, and code enrichment. Remote Docling services are disabled; models run locally and are
 cached between runs.
 
+PDF heading depth is recovered with Docling's `HeadingHierarchyOptions`. Bookmarks take precedence,
+then numbering, then visual style; parsed PDF pages are retained during conversion so the style
+signal is available. The inferred `SectionHeaderItem.level` is saved in `document.json` and
+`elements.jsonl`, and `hierarchical-v3` consumes it without adding a separate heading heuristic.
+Incorrect source headings can still produce an imperfect tree, so parse versions and structure
+catalogs remain inspectable and immutable.
+
 Images use Docling's `REFERENCED` export mode. The JSON and Markdown artifacts therefore refer to
 separate image files instead of embedding large base64 payloads, which keeps artifacts reviewable
 and lets retrieval attach only the images needed for one answer. Tables are additionally exported as
@@ -303,6 +321,14 @@ bounding-box provenance, parse/index/embedding versions, and asset references. T
 small amount of file-derived metadata intentionally: one Qdrant hit contains enough information for
 normal context expansion, while immutable file artifacts remain the inspectable source for parsing
 and visual assets.
+
+#### RapidFuzz for deterministic text location
+
+Hybrid retrieval remains the semantic discovery path. Exact wording, identifiers, section titles,
+and small OCR or spelling errors use a separate file-side path so dense/RRF ranking cannot displace
+an addressable match. The service applies Unicode NFKC, case, and whitespace normalization before
+falling back to RapidFuzz local alignment. Exact matches rank above approximate matches; overlap
+duplicates and per-section repetition are bounded before results enter model context.
 
 #### Filesystem artifacts and manifests
 
@@ -368,7 +394,7 @@ application command.
 
 `ConversationAgent` owns language preferences, runtime context, stale-response validation,
 reasoning escalation, document retrieval, and guarded tool execution. `voice/factories.py`
-currently registers only `conversation` and injects the process-owned retrieval service. Add a service adapter
+currently registers only `conversation` and injects process-owned retrieval and document-access services. Add a service adapter
 and agent tools there when introducing a new business. Session storage, document storage, and
 browser controls remain independent of business implementations.
 
@@ -378,9 +404,11 @@ checks it against the current turn's response language before speaking it unchan
 language constraint is repeated for the main model before and after tool calls and for the reasoning model.
 It returns the conclusion to the normal agent without changing the default model profile.
 `search_documents(query, alternate_query, document_id, max_results, include_images)` returns
-grounded evidence from the global PDF corpus. Both tools run within the current turn's stale-response
-guard; retrieval performs blocking model/database work in a worker thread rather than on the
-realtime event loop.
+grounded semantic evidence from the global PDF corpus. `inspect_document` browses one document's
+outline or reads a bounded section/page range with a continuation cursor. `find_document_text`
+performs normalized substring or fuzzy lookup in one document, optionally constrained by section
+or page. All tools run within the current turn's stale-response guard; blocking file, model, and
+database work runs in a worker thread rather than on the realtime event loop.
 
 ### 3.6 Session and trace persistence
 
@@ -866,9 +894,10 @@ PYTHONPATH=backend uv run --locked python -m opentalk.documents.prepare_index "$
 ```
 
 The output is written to `indexing/<profile>/index_manifest.json` and `nodes.jsonl` beneath that
-parse version. The default `hierarchical-v2` profile creates document and section nodes, bounded
-context parents, indexable text chunks, referenced picture/formula nodes, and table child chunks.
-Use `--profile <new-name>` for another experiment; an existing profile is never overwritten.
+parse version. The default `hierarchical-v3` profile creates document and nested section nodes,
+bounded context parents, indexable text chunks, referenced picture/formula nodes, and table child
+chunks. `structure.json` stores compact section links and page-to-node references without copying
+body text. Use `--profile <new-name>` for another experiment; an existing profile is never overwritten.
 
 Picture retrieval text uses an explicit semantic field list: caption, description, summary,
 keywords, topics, entities, enriched code or molecule text, and chart title. Model/provider names,
@@ -880,7 +909,7 @@ position, repetition, image hashes, or picture classification.
 Validate structure and preview indexable content before adding embeddings:
 
 ```bash
-INDEX_PATH="$PARSE_PATH/indexing/hierarchical-v2"
+INDEX_PATH="$PARSE_PATH/indexing/hierarchical-v3"
 PYTHONPATH=backend uv run --locked python -m opentalk.documents.inspect_index \
   "$INDEX_PATH" --sample-size 20
 ```
@@ -891,6 +920,21 @@ paths and non-text elements that have no searchable description. Content review 
 sample text, section paths, pages and asset references with `document.md`, `elements.jsonl` and the
 rendered PDF. Character limits are preparation bounds; the embedding stage must also validate the
 chosen model's tokenizer limit.
+
+Browse the recovered hierarchy and content without Qdrant:
+
+```bash
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.query inspect \
+  <document-id> --view outline
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.query inspect \
+  <document-id> --view page --page-start 12 --page-end 13
+PYTHONPATH=backend uv run --locked python -m opentalk.documents.query find \
+  <document-id> "known phrase or near spelling" --match-mode auto
+```
+
+Outline results contain compact section IDs and page ranges. Section and page reads enforce a total
+character budget and return `next_cursor` when more content remains. Text lookup reports the applied
+match mode, score, matched span, bounded context, section path, pages, provenance, and assets.
 
 ### 7.6 Embed and persist prepared nodes
 
@@ -907,7 +951,7 @@ Index one prepared profile. The first real run downloads the configured local mo
 `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`:
 
 ```bash
-INDEX_PATH="$PARSE_PATH/indexing/hierarchical-v2"
+INDEX_PATH="$PARSE_PATH/indexing/hierarchical-v3"
 PYTHONPATH=backend uv run --locked --group rag \
   python -m opentalk.documents.index_vectors "$INDEX_PATH"
 ```
@@ -926,7 +970,7 @@ PYTHONPATH=backend uv run --locked --group rag \
   python -m opentalk.documents.search_vectors \
   "Which component sends requests to the agent?" \
   --document-id <document-id> --parse-version <parse-version> \
-  --index-profile hierarchical-v2 --limit 10
+  --index-profile hierarchical-v3 --limit 10
 ```
 
 Inspect result text, parent context, page numbers, scores, and asset references. Evaluate factual,
@@ -941,7 +985,7 @@ PYTHONPATH=backend uv run --locked --group rag \
   python -m opentalk.documents.retrieve \
   "Which component sends requests to the agent?" \
   --alternate-query "agent request component" \
-  --document-id <document-id> --index-profile hierarchical-v2 --limit 6
+  --document-id <document-id> --index-profile hierarchical-v3 --limit 6
 ```
 
 This path uses the same dense and lexical encoders, Qdrant RRF query, filters, parent/neighbor
@@ -954,7 +998,7 @@ The one-shot container mounts the global document directory and writes to the sa
 ```bash
 OPENTALK_DOCUMENTS_DIR=/path/to/document-data \
 docker compose --profile rag run --build --rm document-indexer \
-  /app/data/documents/<document-id>/parses/<parse-version>/indexing/hierarchical-v2
+  /app/data/documents/<document-id>/parses/<parse-version>/indexing/hierarchical-v3
 ```
 
 Set `OPENTALK_QDRANT_URL` to override the local endpoint. Set the optional `QDRANT_API_KEY`

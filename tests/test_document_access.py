@@ -21,6 +21,8 @@ def access_config() -> DocumentAccessConfig:
         default_results=3,
         max_results=5,
         per_section_limit=2,
+        max_images=2,
+        max_image_bytes=1024,
         fuzzy_score_cutoff=70.0,
     )
 
@@ -301,6 +303,8 @@ max_content_chars = 2000
 default_results = 4
 max_results = 8
 per_section_limit = 2
+max_images = 2
+max_image_bytes = 1000000
 fuzzy_score_cutoff = 76.0
 """,
         encoding="utf-8",

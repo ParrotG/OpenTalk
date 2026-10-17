@@ -36,4 +36,6 @@ max_content_chars = 16000
 default_results = 8
 max_results = 20
 per_section_limit = 2
+max_images = 3
+max_image_bytes = 5000000
 fuzzy_score_cutoff = 75.0
