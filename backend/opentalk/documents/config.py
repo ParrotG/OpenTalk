@@ -47,6 +47,18 @@ class IndexingConfig:
     parent_max_chars: int
 
 
+@dataclass(frozen=True)
+class DocumentAccessConfig:
+    max_outline_items: int
+    max_page_span: int
+    default_content_chars: int
+    max_content_chars: int
+    default_results: int
+    max_results: int
+    per_section_limit: int
+    fuzzy_score_cutoff: float
+
+
 def load_document_config(path: Path | None = None) -> DocumentConfig:
     """Load public parser settings without resolving model credentials."""
     path = path or PROJECT_ROOT / "config/documents.toml"
@@ -175,3 +187,35 @@ def load_indexing_config(path: Path | None = None) -> IndexingConfig:
         )
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Invalid indexing configuration at {path}: {error}") from error
+
+
+def load_document_access_config(path: Path | None = None) -> DocumentAccessConfig:
+    """Load bounds for deterministic structure and text access."""
+    path = path or PROJECT_ROOT / "config/documents.toml"
+    try:
+        with path.open("rb") as stream:
+            data = tomllib.load(stream)["access"]
+        integer_names = (
+            "max_outline_items",
+            "max_page_span",
+            "default_content_chars",
+            "max_content_chars",
+            "default_results",
+            "max_results",
+            "per_section_limit",
+        )
+        if any(type(data[name]) is not int or data[name] <= 0 for name in integer_names):
+            raise ValueError("Document access integer limits must be positive.")
+        if data["default_content_chars"] > data["max_content_chars"]:
+            raise ValueError("default_content_chars must not exceed max_content_chars.")
+        if data["default_results"] > data["max_results"]:
+            raise ValueError("default_results must not exceed max_results.")
+        cutoff = data["fuzzy_score_cutoff"]
+        if type(cutoff) not in (int, float) or not math.isfinite(cutoff) or not 0 <= cutoff <= 100:
+            raise ValueError("fuzzy_score_cutoff must be between 0 and 100.")
+        return DocumentAccessConfig(
+            **{name: data[name] for name in integer_names},
+            fuzzy_score_cutoff=float(cutoff),
+        )
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Invalid document access configuration at {path}: {error}") from error

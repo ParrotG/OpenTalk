@@ -27,3 +27,13 @@ profile = "hierarchical-v3"
 chunk_max_chars = 1200
 chunk_overlap_chars = 160
 parent_max_chars = 4800
+
+[access]
+max_outline_items = 40
+max_page_span = 3
+default_content_chars = 8000
+max_content_chars = 16000
+default_results = 8
+max_results = 20
+per_section_limit = 2
+fuzzy_score_cutoff = 75.0

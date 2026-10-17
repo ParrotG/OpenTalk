@@ -9,6 +9,7 @@ dependencies = [
     "livekit-agents[openai,soniox,silero]>=1.3,<2",
     "python-dotenv>=1,<2",
     "qdrant-client>=1.19,<2",
+    "rapidfuzz>=3.14,<4",
 ]
 
 [dependency-groups]
@@ -23,6 +24,7 @@ documents = [
 rag = [
     "fastembed>=0.9,<1",
     "qdrant-client>=1.19,<2",
+    "rapidfuzz>=3.14,<4",
 ]
 
 [tool.uv]
