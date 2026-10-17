@@ -154,7 +154,9 @@ Default ports: frontend 3000, LiveKit 7880 / RTC TCP 7881 / UDP 7882, API 8080, 
 
 `pipeline.process_pdf` composes parsing, preparation, and vectorization in data-flow order; the upload API invokes it in a controlled subprocess. `ConversationAgent.search_documents`, `inspect_document`, and `find_document_text` are the LiveKit tools at the composition boundary.
 
-The default Docling standard pipeline enables OCR, accurate table structure, page/picture/table crops, picture classification/description, formula enrichment, code enrichment, and heading-level inference. `HeadingHierarchyOptions` uses bookmarks, numbering, then visual style; parsed pages remain available during conversion for the style signal. Remote model services are disabled. A simple-PDF routing optimization is deferred until tests justify it.
+The default Docling standard pipeline enables OCR, accurate table structure, page/picture/table crops, picture classification/description, formula enrichment, code enrichment, and heading-level inference. `HeadingHierarchyOptions` uses bookmarks, numbering, then visual style; parsed pages remain available during conversion for the style signal. Remote model services are disabled. The default capacity is 1,000 pages, 500 MiB, and a two-hour Docling processing budget so large books are not cut off by the former ten-minute budget. A simple-PDF routing optimization is deferred until tests justify it.
+
+The parser retains Docling's complete `ConversionResult` until validation. Only `success` with a positive source page count and the same number of processed pages can publish artifacts as completed. `partial_success`, timeout, and mismatched page counts produce a failed manifest containing Docling status, source/processed counts, error count, and bounded structured error details. This prevents a usable-looking prefix of a large PDF from entering indexing and retrieval.
 
 ### 7.2 Interfaces and data contracts
 

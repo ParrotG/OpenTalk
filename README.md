@@ -288,6 +288,12 @@ signal is available. The inferred `SectionHeaderItem.level` is saved in `documen
 Incorrect source headings can still produce an imperfect tree, so parse versions and structure
 catalogs remain inspectable and immutable.
 
+Default parsing capacity is 1,000 pages, 500 MiB, and two hours of Docling processing. The parser
+keeps Docling's conversion status and page counts until validation: only `success` with every source
+page processed can produce a completed manifest. A timeout returns `partial_success`; it is recorded
+as a failed parse with source/processed page counts and bounded structured errors instead of allowing
+the available prefix to proceed into indexing and retrieval.
+
 Images use Docling's `REFERENCED` export mode. The JSON and Markdown artifacts therefore refer to
 separate image files instead of embedding large base64 payloads, which keeps artifacts reviewable
 and lets retrieval attach only the images needed for one answer. Tables are additionally exported as

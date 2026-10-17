@@ -10,7 +10,12 @@ from opentalk.documents.config import (
     HeadingHierarchyConfig,
     load_document_config,
 )
-from opentalk.documents.parser import DoclingParserBackend, parse_pdf
+from opentalk.documents.parser import (
+    DoclingParserBackend,
+    DocumentConversionResult,
+    IncompleteDocumentConversionError,
+    parse_pdf,
+)
 
 
 class FakeImage:
@@ -106,16 +111,35 @@ class FakeBackend:
     version = "test-docling"
     referenced_image_mode = "referenced"
 
-    def __init__(self, document=None, error=None):
+    def __init__(
+        self,
+        document=None,
+        error=None,
+        *,
+        status="success",
+        source_page_count=1,
+        processed_page_count=1,
+        conversion_errors=(),
+    ):
         self.document = document or FakeDocument()
         self.error = error
+        self.status = status
+        self.source_page_count = source_page_count
+        self.processed_page_count = processed_page_count
+        self.conversion_errors = conversion_errors
         self.calls = []
 
     def convert(self, saved_source, config):
         self.calls.append((saved_source, config))
         if self.error is not None:
             raise self.error
-        return self.document
+        return DocumentConversionResult(
+            document=self.document,
+            status=self.status,
+            source_page_count=self.source_page_count,
+            processed_page_count=self.processed_page_count,
+            errors=self.conversion_errors,
+        )
 
 
 def configuration(tmp_path: Path) -> DocumentConfig:
@@ -158,7 +182,14 @@ def test_docling_backend_enables_heading_hierarchy_with_parsed_pages(monkeypatch
 
         def convert(self, source, **values):
             captured["convert"] = {"source": source, **values}
-            return SimpleNamespace(document="converted-document")
+            error = SimpleNamespace(model_dump=lambda **options: {"error_message": "warning"})
+            return SimpleNamespace(
+                document="converted-document",
+                status=SimpleNamespace(value="success"),
+                input=SimpleNamespace(page_count=20),
+                pages=[object()] * 20,
+                errors=[error],
+            )
 
     modules = {
         "docling": ModuleType("docling"),
@@ -186,7 +217,13 @@ def test_docling_backend_enables_heading_hierarchy_with_parsed_pages(monkeypatch
         configuration(tmp_path),
     )
 
-    assert result == "converted-document"
+    assert result == DocumentConversionResult(
+        document="converted-document",
+        status="success",
+        source_page_count=20,
+        processed_page_count=20,
+        errors=({"error_message": "warning"},),
+    )
     assert captured["pipeline"]["generate_parsed_pages"] is True
     assert captured["hierarchy"] == {
         "enabled": True,
@@ -222,6 +259,14 @@ def test_parse_pdf_saves_global_source_and_versioned_non_text_artifacts(tmp_path
     assert manifest["parse_version"] == "test-version"
     assert manifest["settings"]["heading_hierarchy"]["enabled"] is True
     assert manifest["settings"]["generate_parsed_pages"] is True
+    assert manifest["conversion"] == {
+        "status": "success",
+        "source_page_count": 1,
+        "processed_page_count": 1,
+        "error_count": 0,
+        "errors": [],
+        "errors_truncated": False,
+    }
     assert manifest["element_counts"] == {
         "formula": 1,
         "picture": 1,
@@ -263,6 +308,63 @@ def test_parse_failure_keeps_an_inspectable_failed_manifest(tmp_path):
     manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert manifest["status"] == "failed"
     assert manifest["error"] == {"message": "conversion failed", "type": "RuntimeError"}
+
+
+@pytest.mark.parametrize(
+    ("status", "source_pages", "processed_pages"),
+    [
+        ("partial_success", 629, 253),
+        ("success", 629, 628),
+    ],
+)
+def test_incomplete_conversion_is_not_published_as_completed(
+    tmp_path,
+    status,
+    source_pages,
+    processed_pages,
+):
+    source = tmp_path / "large.pdf"
+    source.write_bytes(b"%PDF-1.7\nlarge")
+    conversion_errors = (
+        {
+            "component_type": "pipeline",
+            "module_name": "StandardPdfPipeline",
+            "error_message": "Pipeline stage timeout.",
+            "category": "timeout",
+            "page_no": None,
+        },
+    )
+
+    with pytest.raises(IncompleteDocumentConversionError, match=f"{processed_pages} of {source_pages}"):
+        parse_pdf(
+            source,
+            config=configuration(tmp_path),
+            backend=FakeBackend(
+                status=status,
+                source_page_count=source_pages,
+                processed_page_count=processed_pages,
+                conversion_errors=conversion_errors,
+            ),
+            parse_version=f"incomplete-{status}",
+        )
+
+    manifest_path = next(
+        configuration(tmp_path).storage_root.glob(
+            f"*/parses/incomplete-{status}/manifest.json"
+        )
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["error"]["type"] == "IncompleteDocumentConversionError"
+    assert manifest["error"]["conversion"] == {
+        "status": status,
+        "source_page_count": source_pages,
+        "processed_page_count": processed_pages,
+        "error_count": 1,
+        "errors": list(conversion_errors),
+        "errors_truncated": False,
+    }
+    assert not (manifest_path.parent / "document.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -329,6 +431,14 @@ bookmark_match_threshold = 0.9
         max_level=5,
         bookmark_match_threshold=0.9,
     )
+
+
+def test_default_document_capacity_covers_large_books():
+    loaded = load_document_config()
+
+    assert loaded.max_pages == 1000
+    assert loaded.max_file_size_bytes == 500 * 1024 * 1024
+    assert loaded.document_timeout_seconds == 7200.0
 
 
 def test_document_config_rejects_unknown_table_mode(tmp_path):

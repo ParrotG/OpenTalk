@@ -28,11 +28,58 @@ class DocumentParseResult:
         return {name: str(value) for name, value in asdict(self).items()}
 
 
+@dataclass(frozen=True)
+class DocumentConversionResult:
+    """Normalized Docling result retained until completeness is validated."""
+
+    document: Any
+    status: str
+    source_page_count: int
+    processed_page_count: int
+    errors: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.status == "success"
+            and self.source_page_count > 0
+            and self.processed_page_count == self.source_page_count
+        )
+
+    def manifest_value(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "source_page_count": self.source_page_count,
+            "processed_page_count": self.processed_page_count,
+            "error_count": len(self.errors),
+            "errors": list(self.errors[:20]),
+            "errors_truncated": len(self.errors) > 20,
+        }
+
+
+class IncompleteDocumentConversionError(RuntimeError):
+    """Report a Docling partial result without publishing partial artifacts as complete."""
+
+    def __init__(self, conversion: DocumentConversionResult) -> None:
+        self.conversion = conversion
+        summaries = []
+        for error in conversion.errors:
+            message = error.get("error_message")
+            if isinstance(message, str) and message not in summaries:
+                summaries.append(message)
+        detail = f": {'; '.join(summaries[:3])}" if summaries else ""
+        super().__init__(
+            "Docling returned "
+            f"{conversion.status} after processing {conversion.processed_page_count} of "
+            f"{conversion.source_page_count} pages{detail}"
+        )
+
+
 class DocumentParserBackend(Protocol):
     version: str
     referenced_image_mode: Any
 
-    def convert(self, source: Path, config: DocumentConfig) -> Any: ...
+    def convert(self, source: Path, config: DocumentConfig) -> DocumentConversionResult: ...
 
 
 def _document_hash(path: Path) -> str:
@@ -241,11 +288,19 @@ class DoclingParserBackend:
             allowed_formats=[InputFormat.PDF],
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)},
         )
-        return converter.convert(
+        result = converter.convert(
             source,
             max_num_pages=config.max_pages,
             max_file_size=config.max_file_size_bytes,
-        ).document
+        )
+        errors = tuple(error.model_dump(mode="json") for error in result.errors)
+        return DocumentConversionResult(
+            document=result.document,
+            status=result.status.value,
+            source_page_count=result.input.page_count,
+            processed_page_count=len(result.pages),
+            errors=errors,
+        )
 
 
 def parse_pdf(
@@ -312,7 +367,10 @@ def parse_pdf(
     _write_json(manifest_path, manifest)
 
     try:
-        document = backend.convert(saved_source, config)
+        conversion = backend.convert(saved_source, config)
+        if not conversion.complete:
+            raise IncompleteDocumentConversionError(conversion)
+        document = conversion.document
         referenced_assets = parse_path / "assets"
         referenced_assets.mkdir()
         document.save_as_json(
@@ -331,6 +389,7 @@ def parse_pdf(
         manifest.update(
             status="completed",
             completed_at=datetime.now(UTC).isoformat(),
+            conversion=conversion.manifest_value(),
             element_counts=counts,
             warnings=warnings,
             outputs={
@@ -344,10 +403,16 @@ def parse_pdf(
         )
         _write_json(manifest_path, manifest)
     except BaseException as error:
+        error_value: dict[str, Any] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+        if isinstance(error, IncompleteDocumentConversionError):
+            error_value["conversion"] = error.conversion.manifest_value()
         manifest.update(
             status="failed",
             completed_at=datetime.now(UTC).isoformat(),
-            error={"type": type(error).__name__, "message": str(error)},
+            error=error_value,
         )
         _write_json(manifest_path, manifest)
         raise

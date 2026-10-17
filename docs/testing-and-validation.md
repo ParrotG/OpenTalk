@@ -192,7 +192,8 @@ If uv/Playwright caches are unwritable, choose a writable cache and use it consi
 | --- | --- | --- |
 | PDF/configuration | P-01: parser configuration/input cases; relative roots, limits, non-PDF, empty, oversized. | Resolve paths from project root; fail before Docling and create no document directory. |
 | PDF/artifacts | P-02: deterministic Docling document with headings, picture, table, formula. | Source stored by hash; independent version; consistent manifest, JSON, Markdown, JSONL, crops, HTML/CSV references. |
-| PDF/failure | P-03: injected conversion failure. | Command fails and writes a failed manifest, never completed. |
+| PDF/failure | P-03: injected conversion failure, Docling partial success, and success with a source/processed page-count mismatch. | Command fails and writes a diagnostic failed manifest; partial document artifacts are never published as completed. |
+| PDF/large document | P-03L: configuration boundary plus **manual pending** 600-1,000 page text/image-heavy PDF. | Accept at most 1,000 pages and 500 MiB; allow up to two hours for Docling; completed manifest reports equal positive source and processed page counts. |
 | PDF/real parsing | P-04 **manual pending**: normal text, scan, complex table, formula, picture, bilingual PDFs. | Inspect order, hierarchy, pages/coordinates, OCR, table structure, formula text, picture descriptions/crops; record version/time/warnings. File existence is not quality. |
 | PDF/heading hierarchy | P-04H **manual pending**: numbered, unnumbered, bookmarked, and printed-TOC PDFs. | Compare heading-level distributions and parent paths with the rendered PDF; record false nesting and false headings. Parsed-page style inference is enabled, but incorrect structure is not accepted by configuration alone. |
 | PDF/Docker | P-04D **incomplete**: one-shot parser with read-only input and mounted host output. | Only global output changes; session/telemetry volumes unchanged; model cache separate. |

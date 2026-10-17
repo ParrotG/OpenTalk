@@ -55,7 +55,7 @@ A maintainer can supply a PDF through the CLI or local frontend, parse it automa
 
 | ID | Function and expected result | Boundary |
 | --- | --- | --- |
-| PDF-01 | The CLI accepts one PDF and performs OCR, layout/reading-order analysis, table structure, picture description/classification, formula enrichment, and code enrichment. | Local PDFs only. Docling models may download on first use. Remote enrichment services are disabled. |
+| PDF-01 | The CLI accepts one PDF and performs OCR, layout/reading-order analysis, table structure, picture description/classification, formula enrichment, and code enrichment. | Local PDFs only, with defaults sized for at most 1,000 pages, 500 MiB, and two hours of Docling processing. Docling models may download on first use. Remote enrichment services are disabled. |
 | PDF-02 | Original PDFs are stored by content hash in the global document directory, independent of sessions, attempts, history, and telemetry. | Identical bytes share one source file; the submitted name is manifest metadata only. |
 | PDF-03 | Every parse creates an independent version with a manifest, Docling JSON, Markdown, element inventory, and non-text assets. | A version represents one processing result; one source may have multiple versions. |
 | PDF-04 | Pictures are saved as referenced files and crops; tables retain structure, HTML, CSV, and crops; formulas retain recognized text/LaTeX and crops. | Derived descriptions do not replace the original element, structure, or provenance. |
@@ -84,6 +84,6 @@ A maintainer can supply a PDF through the CLI or local frontend, parse it automa
 
 - Public configuration bounds file size, page count, processing time, and image resolution.
 - Before creating a document directory, validate a regular, non-empty, size-compliant file with a PDF signature. Corrupt, encrypted, or model failures terminate with explicit Docling errors.
-- Both successful and failed parses write manifests. A parse missing core outputs cannot report success.
+- Both successful and failed parses write manifests. A parse missing core outputs, reporting Docling partial success, or processing fewer pages than the source cannot report success.
 - Parse, preparation, and vectorization manifests are global files mounted as directories in Docker. Vectors/payloads live in global Qdrant. Neither belongs in the session database.
 - This stage deliberately avoids speculative cross-store transactions, migration systems, or complex consistency machinery. Add them only when module/integration evidence establishes a need.
