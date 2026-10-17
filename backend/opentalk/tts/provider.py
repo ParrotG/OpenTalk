@@ -26,6 +26,7 @@ class TTSConfig:
     speed: float
     connection_timeout_seconds: float
     stream_idle_timeout_seconds: float
+    max_request_bytes: int
     chunk_chars: int
     chunk_delay_ms: int
     timeout_seconds: float
@@ -60,6 +61,8 @@ def load_tts_config(path: Path | None = None) -> TTSConfig:
                 raise ValueError(f"{key} must be a finite positive number.")
         if not 0.7 <= data["speed"] <= 1.3:
             raise ValueError("speed must be between 0.7 and 1.3.")
+        if type(data["max_request_bytes"]) is not int or data["max_request_bytes"] < 4:
+            raise ValueError("max_request_bytes must be an integer of at least 4.")
         if type(smoke["chunk_chars"]) is not int or smoke["chunk_chars"] <= 0:
             raise ValueError("chunk_chars must be a positive integer.")
         if type(smoke["chunk_delay_ms"]) is not int or smoke["chunk_delay_ms"] < 0:

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from functools import partial
 from uuid import uuid4
 
 from livekit import rtc
@@ -67,6 +68,7 @@ class FakeTTS(tts.TTS):
         super().__init__(capabilities=tts.TTSCapabilities(streaming=True), sample_rate=24000, num_channels=1)
         self.languages = []
         self.cancelled = 0
+        self.requests = []
 
     def update_options(self, *, language):
         self.languages.append(language)
@@ -83,15 +85,18 @@ class FakeSynthesis(tts.SynthesizeStream):
         emitter.initialize(request_id=uuid4().hex, sample_rate=24000, num_channels=1,
                            mime_type="audio/pcm", stream=True)
         emitter.start_segment(segment_id=uuid4().hex)
+        request = []
         try:
             async for text in self._input_ch:
                 if isinstance(text, str):
+                    request.append(text)
                     emitter.push(b"\x01\x00" * 2400)
                     await asyncio.sleep(0.01)
         except asyncio.CancelledError:
             self._tts.cancelled += 1
             raise
         finally:
+            self._tts.requests.append("".join(request))
             emitter.end_segment()
 
 
@@ -151,8 +156,13 @@ class PlaybackSink(io.AudioOutput):
         super().flush()
         if self.active:
             self.active = False
-            self.on_playback_finished(playback_position=self.position, interrupted=False)
+            position = self.position
             self.position = 0.0
+            asyncio.get_running_loop().call_soon(partial(
+                self.on_playback_finished,
+                playback_position=position,
+                interrupted=False,
+            ))
 
     def clear_buffer(self):
         self.cleared += 1

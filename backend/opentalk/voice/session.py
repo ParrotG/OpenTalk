@@ -77,6 +77,7 @@ async def _run_session(*, text_only, voice_config, session_config, store, state,
         context.items.pop(0)
     context.truncate(max_items=session_config.context_max_items)
     llm_config = load_llm_config()
+    tts_config = None if text_only else load_tts_config()
     strong_config = reasoning_config(llm_config)
     injected_model = model is not None
     async with AsyncExitStack() as resources:
@@ -88,13 +89,17 @@ async def _run_session(*, text_only, voice_config, session_config, store, state,
         agent = await factory(journal=journal, state=state, chat_ctx=context,
                               context_max_items=session_config.context_max_items,
                               reasoning_model=reasoning_model,
-                              reasoning_options=(strong_config or llm_config).connection_options)
+                              reasoning_options=(strong_config or llm_config).connection_options,
+                              tts_request_max_bytes=(
+                                  tts_config.max_request_bytes if tts_config is not None else None
+                              ))
         options = {"llm": model, "max_tool_steps": voice_config.max_tool_steps, "userdata": state}
         if text_only:
             options["turn_handling"] = TurnHandlingOptions(turn_detection="manual", preemptive_generation={"enabled": False})
             options["conn_options"] = SessionConnectOptions(llm_conn_options=llm_config.connection_options)
         else:
-            asr_config, tts_config = load_asr_config(), load_tts_config()
+            asr_config = load_asr_config()
+            assert tts_config is not None
             http_session = await resources.enter_async_context(aiohttp.ClientSession())
             recognizer = await resources.enter_async_context(stt_model or create_stt(asr_config, http_session=http_session))
             synthesizer = await resources.enter_async_context(tts_model or create_tts(tts_config, http_session=http_session))

@@ -14,6 +14,7 @@ from livekit.agents.llm import ImageContent
 
 from opentalk.documents.access import DocumentAccessor, DocumentAccessResponse
 from opentalk.documents.retrieval import DocumentRetriever
+from opentalk.tts.chunking import StreamingTTSRequestSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class ConversationAgent(Agent):
         retrieval: DocumentRetriever | None = None,
         document_access: DocumentAccessor | None = None,
         owns_retrieval: bool = True,
+        tts_request_max_bytes: int | None = None,
         clock=None,
     ):
         self.journal = journal
@@ -54,6 +56,7 @@ class ConversationAgent(Agent):
         self.retrieval = retrieval
         self.document_access = document_access
         self.owns_retrieval = owns_retrieval
+        self.tts_request_max_bytes = tts_request_max_bytes
         self.clock = clock or (lambda: datetime.now(UTC))
         self.turn_id = None
         self._speech_turns = {}
@@ -83,11 +86,25 @@ class ConversationAgent(Agent):
         return self.state.preferred_response_language
 
     async def tts_node(self, text, model_settings):
-        stream = Agent.default.tts_node(self, text, model_settings)
+        stream = self._bounded_tts_stream(text, model_settings)
         frames = self.audio_mode.frames(stream, text) if self.audio_mode is not None else stream
         async with aclosing(frames):
             async for frame in frames:
                 yield frame
+
+    async def _bounded_tts_stream(self, text, model_settings):
+        if self.tts_request_max_bytes is None:
+            async with aclosing(Agent.default.tts_node(self, text, model_settings)) as stream:
+                async for frame in stream:
+                    yield frame
+            return
+
+        requests = StreamingTTSRequestSplitter(text, max_bytes=self.tts_request_max_bytes)
+        while not requests.exhausted:
+            stream = Agent.default.tts_node(self, requests.request(), model_settings)
+            async with aclosing(stream):
+                async for frame in stream:
+                    yield frame
 
     @preferred_response_language.setter
     def preferred_response_language(self, value):

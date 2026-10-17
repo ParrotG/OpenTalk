@@ -222,7 +222,10 @@ signalling.
 Soniox offers low-latency streaming speech-to-text and text-to-speech APIs with native LiveKit
 plugins. The STT path returns interim and final segments, supports endpointing and language hints,
 and can preserve mixed Chinese/English text. The TTS path accepts incremental text, buffers it at a
-sentence-like boundary, and returns PCM audio while generation is still in progress.
+sentence-like boundary, and returns PCM audio while generation is still in progress. Long answers
+are divided into bounded provider requests at Unicode character boundaries, preferring sentence or
+word breaks. This keeps each request below the provider's audio-duration limit while LiveKit treats
+the resulting frames as one response and waits for actual playout before completing it.
 
 Using one provider for STT and TTS also keeps credential and operational complexity low for the
 reference deployment. The providers are not hard-wired: any LiveKit-compatible STT or TTS plugin
@@ -374,7 +377,9 @@ application-managed queues:
    tool-step limit configured in `config/voice.toml`.
 7. Assistant text chunks are emitted to the output path. The TTS node receives the same stream
    incrementally; the Soniox plugin buffers text at a sentence-like boundary and returns audio frames
-   over its WebSocket while text generation is still running.
+   over its WebSocket while text generation is still running. When a reply exceeds
+   `max_request_bytes`, the node completes the current provider request and continues with another
+   request over the persistent connection; it does not discard the remaining text.
 8. Audio frames are written into the LiveKit room and played by the browser. Text output is also
    available for the transcript and can be used without audio in text mode.
 
@@ -848,7 +853,7 @@ LiveKit API secrets in `NEXT_PUBLIC_*` variables or the frontend environment.
 | --- | --- |
 | `config/llm.toml` | LLM base URL, model, credential variable, default non-thinking options, and optional reasoning profile. |
 | `config/asr.toml` | Soniox STT endpoint, model, language hints, sample rate, endpoint delay, and replay settings. |
-| `config/tts.toml` | Soniox TTS endpoint, model, voice, primary language, sample rate, and timing settings. |
+| `config/tts.toml` | Soniox TTS endpoint, model, voice, primary language, sample rate, timing settings, and the per-request text bound used to avoid provider duration truncation. |
 | `config/voice.toml` | LiveKit URL, agent name, VAD parameters, endpointing, and interruption duration. |
 | `config/sessions.toml` | Session/telemetry database paths, heartbeat/lease limits, context size, API host/port, token TTL, and tracing switch. |
 | `config/documents.toml` | Global PDF storage, parsing limits, image export, table mode, Docling enrichment switches, accelerator device, parser threads, stage batches, and queue bounds. `OPENTALK_DOCUMENT_DEVICE` can override the device for deployment. |

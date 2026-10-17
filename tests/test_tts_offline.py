@@ -13,6 +13,7 @@ from livekit.agents import APIError, APIStatusError, tts
 from livekit.plugins import soniox
 
 from opentalk.tts import provider, smoke
+from opentalk.tts.chunking import StreamingTTSRequestSplitter
 
 TEXT = (
     "Your meeting room is available tomorrow morning. "
@@ -49,6 +50,7 @@ def test_tts_credentials_and_native_interface(monkeypatch, tmp_path):
     ("speed = 1.0", "speed = 1.5"),
     ("connection_timeout_seconds = 15.0", "connection_timeout_seconds = nan"),
     ("stream_idle_timeout_seconds = 5.0", "stream_idle_timeout_seconds = 0.0"),
+    ("max_request_bytes = 400", "max_request_bytes = 3"),
     ("chunk_chars = 12", "chunk_chars = 0"),
     ("chunk_delay_ms = 150", "chunk_delay_ms = -1"),
     ("timeout_seconds = 120.0", "timeout_seconds = inf"),
@@ -59,6 +61,25 @@ def test_tts_invalid_configuration(tmp_path, before, after):
     path.write_text(text.replace(before, after), encoding="utf-8")
     with pytest.raises(ValueError, match="Invalid TTS configuration"):
         provider.load_tts_config(path)
+
+
+def test_request_splitter_preserves_unicode_when_the_next_character_does_not_fit():
+    async def source():
+        yield "a" * 79
+        yield "中🙂 and the remaining text"
+
+    async def scenario():
+        splitter = StreamingTTSRequestSplitter(source(), max_bytes=80)
+        requests = []
+        while not splitter.exhausted:
+            request = "".join([part async for part in splitter.request()])
+            if request:
+                requests.append(request)
+        return requests
+
+    requests = asyncio.run(scenario())
+    assert all(len(request.encode("utf-8")) <= 80 for request in requests)
+    assert "".join(requests) == "a" * 79 + "中🙂 and the remaining text"
 
 
 class FakeWebSocket:

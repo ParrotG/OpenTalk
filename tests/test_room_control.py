@@ -120,6 +120,35 @@ def test_enabling_voice_mid_text_reply_keeps_that_reply_unsynchronized():
     asyncio.run(scenario())
 
 
+def test_long_voice_reply_uses_bounded_tts_requests_without_truncation():
+    async def scenario():
+        model, tts = ScriptedLLM(), CountingTTS()
+        model.replies["Long answer"] = "第一部分包含一些细节。" * 30
+        async with open_session(agent_key="conversation", model=model,
+                                stt_model=FakeSTT(), tts_model=tts) as (session, agent, journal):
+            speaker, text = PlaybackSink(), TextSink()
+            session.output.audio = speaker
+            session.output.transcription = text
+            agent.tts_request_max_bytes = 80
+            mode = agent.audio_mode = RoomAudioMode(session)
+            try:
+                await session.start(agent=agent)
+                mode.configure_outputs()
+                await asyncio.wait_for(session.run(user_input="Long answer"), timeout=8)
+                await asyncio.wait_for(mode.synchronizer.barrier(), timeout=2)
+                requests = [request for request in tts.requests if request]
+                assistant = [item for item in session.history.items
+                             if item.type == "message" and item.role == "assistant"][-1]
+                assert len(requests) > 1
+                assert all(len(request.encode("utf-8")) <= 80 for request in requests)
+                assert "".join(requests) == assistant.text_content
+                assert "".join(text.parts) == assistant.text_content
+                assert speaker.frames and speaker.cleared == 0
+            finally:
+                await mode.aclose()
+    asyncio.run(scenario())
+
+
 def test_page_close_intent_may_arrive_after_the_media_disconnect():
     async def scenario():
         async with open_session(text_only=True, agent_key="conversation", model=ScriptedLLM()) as (session, agent, journal):
