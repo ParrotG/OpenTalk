@@ -445,7 +445,30 @@ The frontend is a small Next.js and React application using the native LiveKit b
 The minimal client connects to the same LiveKit Server,
 AgentSession, and providers as the backend command-line paths.
 
-### 3.8 PDF ingestion and versioned artifacts
+### 3.8 UI/UX design and information hierarchy
+
+The interface uses a deliberately minimal visual language: a restrained neutral palette, compact
+controls, generous whitespace, and one conversation-focused workspace. Shared semantic color
+tokens adapt automatically to the browser's light or dark color scheme, so panels, text, borders,
+hover states, success states, and errors remain legible without maintaining two separate layouts.
+The same structure scales down to mobile instead of introducing a different interaction model.
+
+The information hierarchy follows progressive disclosure. State that helps a user decide whether
+the product is ready remains visible at the point of action: document cards show queued, Parse,
+Structure, Vectors, ready, and failed states; the toolbar summarizes service availability; and the
+conversation composer reports connection, listening, thinking, speaking, and saving states. Voice
+mode adds an animated waveform and an explicit state label, providing immediate feedback that the
+voice path is listening or responding. Interim speech revisions and streamed assistant text update
+the transcript in place, which lets users verify recognition and answers while processing continues.
+
+Implementation details that do not help the next user decision stay hidden. The UI does not expose
+tool calls, reasoning internals, queue ownership, embedding work, retrieval ranks, leases, or raw
+provider diagnostics in the conversation. Documents, recent sessions, and detailed service checks
+are closed by default and opened on demand. This keeps history and operational controls available
+without competing with the active conversation; errors surface only when they affect an action the
+user can understand or retry.
+
+### 3.9 PDF ingestion and versioned artifacts
 
 Documents are deployment-global and deliberately have no `session_id`. The browser posts one
 multipart PDF through the same-origin Next.js proxy to the aiohttp control API. The API streams the
@@ -492,7 +515,7 @@ annotations, and asset paths. The original PDF and all parse/intermediate output
 filesystem; Compose
 uses a host directory mount for them, a named model cache, and a separate Qdrant volume.
 
-### 3.9 Hierarchical preparation and vector indexing
+### 3.10 Hierarchical preparation and vector indexing
 
 Index preparation is deterministic and database-independent. It reads one completed parse and
 builds a hierarchy with four practical levels:
@@ -528,7 +551,7 @@ space. UUIDv5 point IDs are derived from document, parse, index, embedding profi
 repeating the same vectorization run upserts the same logical points. The run manifest verifies the
 stored point count and records failures without appending duplicate JSONL records.
 
-### 3.10 Agentic hybrid retrieval and multimodal evidence
+### 3.11 Agentic hybrid retrieval and multimodal evidence
 
 Retrieval is agentic at the decision and query-planning boundary. The conversation model decides
 whether uploaded documents are relevant and calls `search_documents`; it converts the current turn
@@ -564,7 +587,7 @@ The corpus is global and currently has no tenant ACL or per-session selection st
 the local single-user scope; authentication, document ownership, and access-filtered retrieval are
 required before a multi-user deployment.
 
-### 3.11 Module internals worth knowing
+### 3.12 Module internals worth knowing
 
 ```text
 backend/opentalk/
@@ -1050,14 +1073,19 @@ PYTHONPATH=backend uv run --locked pytest tests/test_llm_live.py --live-llm -q
 ### 7.11 More documentation
 
 The README is the high-level guide. The `docs/` directory contains detailed validation guides,
-including independent ASR, TTS, session, realtime voice, web, Docker, test procedures.
-Some of those guides are written in Chinese. They remain useful for reproducing component-level
-checks and should be consulted when changing providers, database schema, or deployment topology.
+including requirements, system contracts, independent ASR, TTS, session, realtime voice, web,
+Docker, and test procedures. They should be consulted when changing providers, database schema,
+or deployment topology.
 
 Useful starting points:
 
-- [Testing and validation](docs/测试与验收.md) preserves component commands,
+- [Testing and validation](docs/testing-and-validation.md) preserves component commands,
   previously kept in the README.
-- [System design](docs/系统设计.md) defines architecture and module interfaces.
+- [System design](docs/system-design.md) defines architecture and module interfaces.
+- [Requirements](docs/requirements.md) defines supported behavior and scope.
+- [Documentation guidelines](docs/documentation-guidelines.md) defines sources of truth and
+  handoff evidence.
+- [Improvement backlog](docs/improvement-backlog.md) records known gaps without treating them as
+  authorization.
 - The validation specification covers ASR, TTS, sessions, realtime voice, the browser client,
   Docker, and browser test cases.

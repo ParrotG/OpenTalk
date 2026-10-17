@@ -9,7 +9,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Start LiveKit, the Python session API, and the Python room worker first, as described in [the testing and validation specification](../docs/测试与验收.md). Open http://localhost:3000. `pnpm build` and `pnpm start` provide a production build.
+Start LiveKit, the Python session API, and the Python room worker first, as described in [the testing and validation specification](../docs/testing-and-validation.md). Open http://localhost:3000. `pnpm build` and `pnpm start` provide a production build.
 
 Optional server-only settings in `frontend/.env.local`:
 
