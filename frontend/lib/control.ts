@@ -43,6 +43,7 @@ export type SavedDocument = {
     | 'vectorizing'
     | 'ready'
     | 'failed';
+  deletable: boolean;
   updated_at: string;
   stages: {
     parsing: DocumentStage;
@@ -61,6 +62,17 @@ export async function control<T>(path: string, body?: unknown): Promise<T> {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || data.error || 'Session request failed.');
+  return data as T;
+}
+
+export async function removeResource<T>(path: string): Promise<T> {
+  const response = await fetch(`/api/control/${path}`, {
+    method: 'DELETE',
+    cache: 'no-store',
+    signal: AbortSignal.timeout(30000),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || data.error || 'Delete request failed.');
   return data as T;
 }
 

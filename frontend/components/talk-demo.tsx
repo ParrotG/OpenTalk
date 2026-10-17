@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, ChevronDown, Files, History, Plus, RefreshCw, X } from 'lucide-react';
+import { Activity, ChevronDown, Files, History, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { Composer } from '@/components/composer';
 import { DocumentPanel } from '@/components/document-panel';
 import { LiveConversation, type ConversationHandle } from '@/components/live-conversation';
@@ -13,6 +13,7 @@ import {
   control,
   errorMessage,
   history,
+  removeResource,
   sleep,
 } from '@/lib/control';
 import { currentSession, rememberSession, type CurrentSession } from '@/lib/current-session';
@@ -185,6 +186,35 @@ export function TalkDemo() {
     }
   }
 
+  async function deleteSession(saved: SavedSession) {
+    if (
+      busyRef.current ||
+      ['pending', 'active'].includes(saved.status) ||
+      !window.confirm('Delete this session and its saved conversation history?')
+    )
+      return;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      await removeResource(`sessions/${saved.session_id}`);
+      setRecent((items) => items.filter((item) => item.session_id !== saved.session_id));
+      if (selected?.session_id === saved.session_id) {
+        ++selectionVersion.current;
+        pendingRequest.current = null;
+        rememberSession(null);
+        setSelected(null);
+        setMessages([]);
+        setDraft('');
+      }
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (restored.current) return;
     restored.current = true;
@@ -348,19 +378,33 @@ export function TalkDemo() {
               <div className="recent-list">
                 {recent.length ? (
                   recent.map((saved) => (
-                    <button
-                      className={`recent-item ${selected?.session_id === saved.session_id ? 'selected' : ''}`}
-                      disabled={busy || restoring}
-                      key={saved.session_id}
-                      onClick={() => void select(saved)}
-                    >
-                      <span>
-                        <code>{saved.session_id.slice(0, 12)}</code>
-                        <small>{date(saved.updated_at)}</small>
-                      </span>
-                      <span className={`dot ${saved.status}`} title={saved.status} />
-                      <span className="sr-only">{saved.status}</span>
-                    </button>
+                    <div className="recent-row" key={saved.session_id}>
+                      <button
+                        className={`recent-item ${selected?.session_id === saved.session_id ? 'selected' : ''}`}
+                        disabled={busy || restoring}
+                        onClick={() => void select(saved)}
+                      >
+                        <span>
+                          <code>{saved.session_id.slice(0, 12)}</code>
+                          <small>{date(saved.updated_at)}</small>
+                        </span>
+                        <span className={`dot ${saved.status}`} title={saved.status} />
+                        <span className="sr-only">{saved.status}</span>
+                      </button>
+                      <button
+                        className="icon-button delete-button"
+                        disabled={busy || restoring || ['pending', 'active'].includes(saved.status)}
+                        aria-label="Delete saved conversation"
+                        title={
+                          ['pending', 'active'].includes(saved.status)
+                            ? 'End this session before deleting it'
+                            : 'Delete session'
+                        }
+                        onClick={() => void deleteSession(saved)}
+                      >
+                        <Trash2 size={15} aria-hidden="true" />
+                      </button>
+                    </div>
                   ))
                 ) : (
                   <p className="caption">No sessions yet.</p>

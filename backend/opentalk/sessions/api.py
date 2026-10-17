@@ -22,10 +22,11 @@ from livekit.protocol.room import RoomConfiguration
 from opentalk.asr.provider import load_asr_config
 from opentalk.config import PROJECT_ROOT
 from opentalk.documents.config import DocumentConfig, load_document_config
-from opentalk.documents.library import DocumentManager, DocumentProcessManager
+from opentalk.documents.library import DocumentError, DocumentManager, DocumentProcessManager
 from opentalk.llm.provider import load_llm_config
 from opentalk.sessions.config import load_session_config
 from opentalk.sessions.store import SessionError, SessionStore
+from opentalk.sessions.telemetry import TelemetryStore
 from opentalk.tts.provider import load_tts_config
 from opentalk.voice.config import load_voice_config
 from opentalk.voice.factories import agent_factory
@@ -45,6 +46,15 @@ async def errors(request, handler):
     except SessionError as error:
         return web.json_response({"error": error.code, "message": str(error)},
                                  status=404 if error.code == "session_not_found" else 409)
+    except DocumentError as error:
+        status = {
+            "invalid_document_id": 400,
+            "document_not_found": 404,
+            "document_busy": 409,
+            "document_unavailable": 503,
+            "document_delete_failed": 503,
+        }.get(error.code, 409)
+        return web.json_response({"error": error.code, "message": str(error)}, status=status)
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return web.json_response({"error": "invalid_request", "message": "Invalid request parameters."}, status=400)
 
@@ -82,6 +92,7 @@ def create_app(
     api_secret=None,
     document_config: DocumentConfig | None = None,
     document_manager: DocumentManager | None = None,
+    telemetry_store: TelemetryStore | None = None,
 ):
     configuration = configuration or load_session_config()
     store = store or SessionStore(configuration.database_path, lease_seconds=configuration.lease_seconds,
@@ -94,6 +105,11 @@ def create_app(
     internal_url = os.environ.get("LIVEKIT_URL", voice_config.livekit_url)
     document_config = document_config or load_document_config()
     document_manager = document_manager or DocumentProcessManager(document_config)
+    telemetry_store = telemetry_store or TelemetryStore(
+        configuration.telemetry_database_path,
+        max_events=configuration.telemetry_max_events,
+        retention_days=configuration.telemetry_retention_days,
+    )
     app = web.Application(
         middlewares=[errors],
         client_max_size=document_config.max_file_size_bytes + 1024 * 1024,
@@ -223,6 +239,19 @@ def create_app(
                 return web.json_response({"session": result, "error": "room_cleanup_failed"}, status=502)
         return web.json_response(result, status=202 if result["status"] == "active" else 200)
 
+    async def delete_session(request):
+        session_id = request.match_info["session_id"]
+        saved = await asyncio.to_thread(store.get, session_id)
+        if saved["status"] in {"pending", "active"}:
+            raise SessionError("session_busy", "End the active session before deleting it.")
+
+        def delete_persisted_session():
+            telemetry_store.delete_session(session_id)
+            return store.delete(session_id)
+
+        deleted = await asyncio.to_thread(delete_persisted_session)
+        return web.json_response({"deleted": True, "session_id": deleted["session_id"]})
+
     async def documents(request):
         return web.json_response(
             {
@@ -337,14 +366,21 @@ def create_app(
             headers={"Cache-Control": "no-store"},
         )
 
+    async def delete_document(request):
+        document_id = request.match_info["document_id"]
+        await document_manager.delete(document_id)
+        return web.json_response({"deleted": True, "document_id": document_id})
+
     async def close_documents(app):
         await document_manager.close()
 
     app.add_routes([web.get("/health", health), web.get("/health/services", services), web.post("/sessions", create),
                     web.get("/sessions", listing), web.get("/sessions/{session_id}", show),
                     web.get("/sessions/{session_id}/history", history),
-                    web.post("/sessions/{session_id}/end", end), web.get("/documents", documents),
-                    web.post("/documents", upload_document)])
+                    web.post("/sessions/{session_id}/end", end),
+                    web.delete("/sessions/{session_id}", delete_session),
+                    web.get("/documents", documents), web.post("/documents", upload_document),
+                    web.delete("/documents/{document_id}", delete_document)])
     app.on_cleanup.append(close_documents)
     return app
 

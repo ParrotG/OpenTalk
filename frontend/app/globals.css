@@ -220,7 +220,7 @@ a {
 }
 .document-summary {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
+  grid-template-columns: 30px minmax(0, 1fr) auto 28px;
   align-items: center;
   gap: 9px;
 }
@@ -382,6 +382,12 @@ h2 {
   flex-direction: column;
   gap: 4px;
 }
+.recent-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 2px;
+}
 .recent-item {
   display: flex;
   justify-content: space-between;
@@ -393,6 +399,19 @@ h2 {
   width: 100%;
   background: transparent;
   text-align: left;
+}
+.delete-button {
+  width: 30px;
+  height: 30px;
+  color: var(--muted);
+}
+.delete-button:hover:not(:disabled) {
+  background: var(--error-bg);
+  color: var(--danger);
+}
+.document-delete {
+  width: 28px;
+  height: 28px;
 }
 .recent-item:hover:not(:disabled),
 .recent-item.selected {

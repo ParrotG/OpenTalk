@@ -38,3 +38,7 @@ class TelemetryStore:
                 "SELECT payload_json FROM telemetry WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
                 (session_id, limit),
             )]
+
+    def delete_session(self, session_id):
+        with sqlite3.connect(self.path, timeout=5) as db:
+            db.execute("DELETE FROM telemetry WHERE session_id=?", (session_id,))

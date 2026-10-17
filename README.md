@@ -434,9 +434,9 @@ The frontend is a small Next.js and React application using the native LiveKit b
   message instead of accumulating duplicates.
 - A lightweight service panel checks the session API, LiveKit server, worker health, and provider
   configuration presence without calling paid provider APIs.
-- Session selection, history, automatic save/close, and resume are handled through the control API.
-- A left-side document drawer streams one PDF upload, lists global documents, and polls the Parse,
-  Structure, and Vectors manifests until the document is ready or a stage reports failure.
+- Session selection, history, automatic save/close, resume, and terminal-session deletion are handled through the control API.
+- A left-side document drawer streams one PDF upload, lists global documents, polls the Parse,
+  Structure, and Vectors manifests, and deletes completed or failed documents after confirmation.
 - Next.js route handlers proxy control-plane requests to the internal session API, and the browser
   receives only a short-lived LiveKit JWT. Provider keys and LiveKit API secrets never reach the
   client bundle.
@@ -457,6 +457,12 @@ aiohttp event loop. The reference deployment uses one processing slot because Do
 models are memory-intensive. The API returns after queueing and reconstructs document status from
 the stage manifests, supplemented by in-process queued/processing state before the first manifest
 exists. Closing the API terminates subprocesses it owns.
+
+Deletion is limited to stable lifecycle points. Active or pending sessions must be ended first, and
+queued or processing documents return a conflict. A document delete removes every Qdrant point with
+that `document_id` before removing the content-hash directory, so a vector-store failure leaves the
+file artifacts available for a retry. Session deletion removes its history, attempts, allocation
+requests, and bounded telemetry.
 
 The file layout is intentionally explicit:
 
@@ -552,8 +558,8 @@ the next LLM step for multimodal reasoning. Image count and bytes are capped. Lo
 returned in the normal agent tool payload.
 
 The corpus is global and currently has no tenant ACL or per-session selection state. That matches
-the local single-user scope; authentication, document ownership, deletion, and access-filtered
-retrieval are required before a multi-user deployment.
+the local single-user scope; authentication, document ownership, and access-filtered retrieval are
+required before a multi-user deployment.
 
 ### 3.11 Module internals worth knowing
 
@@ -573,14 +579,14 @@ backend/opentalk/
   sessions/store.py           Sessions, attempts, requests, history, leases.
   sessions/tracing.py         Optional OpenTelemetry-to-SQLite exporter.
   sessions/telemetry.py       Bounded event/metric storage.
-  sessions/api.py             Control API for sessions plus document upload and status.
+  sessions/api.py             Control API for session/document lifecycle and status.
   documents/parser.py         Docling PDF parsing and versioned file artifact export.
   documents/parse.py          Manual PDF parsing command-line entry point.
   documents/indexing.py       Hierarchical index preparation without embeddings or a database.
   documents/prepare_index.py  Manual index-preparation command-line entry point.
   documents/embedding.py      Local embedding provider contract and FastEmbed adapter.
   documents/lexical.py        Deterministic multilingual sparse-vector encoding.
-  documents/vector_store.py   Qdrant schema, idempotent upsert, filtering, and raw search adapter.
+  documents/vector_store.py   Qdrant schema, idempotent upsert/delete, filtering, and raw search adapter.
   documents/vector_index.py   Prepared-node embedding, retrieval payload, and run manifest.
   documents/index_vectors.py  Manual vector-indexing command-line entry point.
   documents/search_vectors.py Raw dense-search command for stage-level quality checks.

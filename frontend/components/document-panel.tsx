@@ -1,8 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FileText, LoaderCircle, RefreshCw, Upload, X } from 'lucide-react';
-import { SavedDocument, control, errorMessage, uploadDocument } from '@/lib/control';
+import { FileText, LoaderCircle, RefreshCw, Trash2, Upload, X } from 'lucide-react';
+import {
+  SavedDocument,
+  control,
+  errorMessage,
+  removeResource,
+  uploadDocument,
+} from '@/lib/control';
 
 function bytes(value: number) {
   if (value < 1024) return `${value} B`;
@@ -32,6 +38,7 @@ export function DocumentPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [documents, setDocuments] = useState<SavedDocument[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [maxUploadBytes, setMaxUploadBytes] = useState<number | null>(null);
   const [loadError, setLoadError] = useState('');
   const [uploadError, setUploadError] = useState('');
@@ -84,6 +91,25 @@ export function DocumentPanel({ open, onClose }: { open: boolean; onClose: () =>
     } finally {
       setUploading(false);
       if (input.current) input.current.value = '';
+    }
+  }
+
+  async function deleteDocument(document: SavedDocument) {
+    if (
+      deleting ||
+      !document.deletable ||
+      !window.confirm(`Delete ${document.name}, its derived files, and its vectors?`)
+    )
+      return;
+    setDeleting(document.document_id);
+    setLoadError('');
+    try {
+      await removeResource(`documents/${document.document_id}`);
+      setDocuments((items) => items.filter((item) => item.document_id !== document.document_id));
+    } catch (error) {
+      setLoadError(errorMessage(error));
+    } finally {
+      setDeleting(null);
     }
   }
 
@@ -162,6 +188,23 @@ export function DocumentPanel({ open, onClose }: { open: boolean; onClose: () =>
                   </p>
                 </div>
                 <span className={`document-status ${document.status}`}>{document.status}</span>
+                <button
+                  className="icon-button delete-button document-delete"
+                  disabled={deleting !== null || !document.deletable}
+                  aria-label={`Delete document ${document.name}`}
+                  title={
+                    !document.deletable
+                      ? 'Wait for processing to finish before deleting this document'
+                      : 'Delete document'
+                  }
+                  onClick={() => void deleteDocument(document)}
+                >
+                  {deleting === document.document_id ? (
+                    <LoaderCircle className="spin" size={15} aria-hidden="true" />
+                  ) : (
+                    <Trash2 size={15} aria-hidden="true" />
+                  )}
+                </button>
               </div>
               <div className="document-stages">
                 {(Object.keys(stageLabels) as (keyof typeof stageLabels)[]).map((name) => {

@@ -242,6 +242,22 @@ class SessionStore:
                 db.execute("UPDATE sessions SET end_requested=1 WHERE session_id=?", (session_id,))
             return self._get(db, session_id)
 
+    def delete(self, session_id):
+        """Delete one terminal logical session and all of its persisted attempts and history."""
+        with self.connection(write=True) as db:
+            self._expire(db)
+            session = self._get(db, session_id)
+            if session["status"] in {"pending", "active"}:
+                raise SessionError(
+                    "session_busy",
+                    "End the active session before deleting it.",
+                )
+            db.execute("DELETE FROM history WHERE session_id=?", (session_id,))
+            db.execute("DELETE FROM requests WHERE session_id=?", (session_id,))
+            db.execute("DELETE FROM attempts WHERE session_id=?", (session_id,))
+            db.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+            return session
+
     def attempts(self, session_id):
         with self.connection() as db:
             self._get(db, session_id)

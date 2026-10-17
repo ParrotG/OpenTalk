@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,6 +12,7 @@ from livekit import api
 from opentalk.sessions import config as session_settings
 from opentalk.sessions.api import create_app
 from opentalk.sessions.store import SessionStore
+from opentalk.sessions.telemetry import TelemetryStore
 
 
 def test_room_token_idempotency_end_and_resume(monkeypatch):
@@ -81,6 +83,39 @@ def test_api_invalid_requests_failed_restore_and_pagination():
             assert (await client.get("/sessions?limit=10000")).status == 409
             assert (await client.get("/sessions/unknown")).status == 404
             assert (await client.post(f"/sessions/{saved['session_id']}/end", json={})).status == 400
+    asyncio.run(scenario())
+
+
+def test_api_deletes_only_terminal_sessions_and_telemetry():
+    config = session_settings.load_session_config()
+    store = SessionStore(config.database_path)
+    telemetry = TelemetryStore(config.telemetry_database_path)
+    saved = store.reserve(request_id="delete-session")
+    telemetry.write([{
+        "event_id": "delete-event",
+        "session_id": saved["session_id"],
+        "attempt_id": saved["attempt_id"],
+        "type": "test",
+        "timestamp": time.time(),
+    }])
+
+    async def scenario():
+        app = create_app(configuration=config, store=store, telemetry_store=telemetry)
+        async with TestClient(TestServer(app)) as client:
+            endpoint = f"/sessions/{saved['session_id']}"
+            busy = await client.delete(endpoint)
+            assert busy.status == 409
+            assert (await busy.json())["error"] == "session_busy"
+            store.request_end(saved["session_id"])
+            deleted = await client.delete(endpoint)
+            assert deleted.status == 200
+            assert await deleted.json() == {
+                "deleted": True,
+                "session_id": saved["session_id"],
+            }
+            assert (await client.get(endpoint)).status == 404
+            assert telemetry.read(saved["session_id"]) == []
+
     asyncio.run(scenario())
 
 

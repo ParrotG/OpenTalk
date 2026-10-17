@@ -77,6 +77,32 @@ def test_failed_cancelled_and_expired_sessions_are_not_resumable(tmp_path):
     assert store.request_end(other["session_id"])["status"] == "failed"
 
 
+def test_only_terminal_sessions_can_be_deleted_with_related_data(tmp_path):
+    store = SessionStore(tmp_path / "sessions.sqlite3")
+    saved = active(store)
+    store.checkpoint(
+        saved["session_id"],
+        saved["attempt_id"],
+        "worker",
+        {"items": [{"id": "message", "type": "message", "role": "user", "content": ["hello"]}]},
+        {},
+    )
+    with pytest.raises(SessionError, match="End the active session"):
+        store.delete(saved["session_id"])
+
+    store.checkpoint(
+        saved["session_id"],
+        saved["attempt_id"],
+        "worker",
+        {"items": []},
+        {},
+        status="completed",
+    )
+    assert store.delete(saved["session_id"])["status"] == "completed"
+    with pytest.raises(SessionError, match="not found"):
+        store.get(saved["session_id"])
+
+
 def test_snapshot_and_completed_status_commit_together(tmp_path):
     store = SessionStore(tmp_path / "sessions.sqlite3")
     saved = active(store)
@@ -99,3 +125,5 @@ def test_telemetry_upsert_retention_and_row_limit(tmp_path):
     store.write([event("old", time.time() - 86401)])
     assert len(store.read("session")) == 3
     assert not any(ev["event_id"] == "old" for ev in store.read("session"))
+    store.delete_session("session")
+    assert store.read("session") == []

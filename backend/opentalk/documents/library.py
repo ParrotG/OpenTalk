@@ -9,14 +9,21 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NotRequired, Protocol, TypedDict
+from typing import Any, Callable, NotRequired, Protocol, TypedDict
 from uuid import uuid4
 
 from opentalk.documents.config import DocumentConfig, load_document_config, load_indexing_config
-from opentalk.documents.vector_config import load_rag_config
+from opentalk.documents.vector_config import VectorStoreConfig, load_rag_config
+from opentalk.documents.vector_store import QdrantVectorStore, VectorStore
 
 logger = logging.getLogger(__name__)
 _DOCUMENT_ID = re.compile(r"[0-9a-f]{64}")
+
+
+class DocumentError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class DocumentStage(TypedDict):
@@ -37,6 +44,7 @@ class DocumentRecord(TypedDict):
     parse_count: int
     parse_version: str | None
     status: str
+    deletable: bool
     updated_at: str
     stages: DocumentStages
 
@@ -52,6 +60,8 @@ class DocumentManager(Protocol):
     ) -> tuple[bool, str]: ...
 
     async def documents(self) -> list[DocumentRecord]: ...
+
+    async def delete(self, document_id: str) -> None: ...
 
     async def close(self) -> None: ...
 
@@ -129,6 +139,7 @@ def _document_record(
         "parse_count": len(parse_manifests),
         "parse_version": None,
         "status": "uploaded",
+        "deletable": True,
         "updated_at": datetime.fromtimestamp(source_modified, UTC).isoformat(),
         "stages": {
             "parsing": _stage("pending"),
@@ -247,12 +258,21 @@ class ProcessingJob:
 class DocumentProcessManager:
     """Own bounded subprocesses so blocking model work never enters the API loop."""
 
-    def __init__(self, config: DocumentConfig | None = None, *, concurrency: int = 1) -> None:
+    def __init__(
+        self,
+        config: DocumentConfig | None = None,
+        *,
+        concurrency: int = 1,
+        vector_store_factory: Callable[[VectorStoreConfig], VectorStore] | None = None,
+    ) -> None:
         if concurrency < 1:
             raise ValueError("Document processing concurrency must be positive.")
         self.config = config or load_document_config()
         self._semaphore = asyncio.Semaphore(concurrency)
+        self._mutation_lock = asyncio.Lock()
         self._jobs: dict[str, ProcessingJob] = {}
+        self._deleting: set[str] = set()
+        self._vector_store_factory = vector_store_factory or QdrantVectorStore
         self._closing = False
 
     async def enqueue(
@@ -263,31 +283,87 @@ class DocumentProcessManager:
         size_bytes: int,
         staged_path: Path,
     ) -> tuple[bool, str]:
-        if self._closing:
-            raise RuntimeError("Document processing is shutting down.")
-        for job in self._jobs.values():
-            if job.document_id == document_id and job.status in {"queued", "processing"}:
+        async with self._mutation_lock:
+            if self._closing:
+                raise RuntimeError("Document processing is shutting down.")
+            if document_id in self._deleting:
                 await asyncio.to_thread(shutil.rmtree, staged_path.parent, True)
-                return False, job.job_id
-        existing = await asyncio.to_thread(list_documents, self.config)
-        ready = next(
-            (item for item in existing if item["document_id"] == document_id and item["status"] == "ready"),
-            None,
-        )
-        if ready is not None:
-            await asyncio.to_thread(shutil.rmtree, staged_path.parent, True)
-            return False, ""
-        job = ProcessingJob(
-            job_id=uuid4().hex,
-            document_id=document_id,
-            name=name,
-            size_bytes=size_bytes,
-            staged_path=staged_path,
-            created_at=datetime.now(UTC).isoformat(),
-        )
-        self._jobs[job.job_id] = job
-        job.task = asyncio.create_task(self._run(job), name=f"document-{job.job_id}")
-        return True, job.job_id
+                raise DocumentError("document_busy", "The document is being deleted.")
+            for job in self._jobs.values():
+                if job.document_id == document_id and job.status in {"queued", "processing"}:
+                    await asyncio.to_thread(shutil.rmtree, staged_path.parent, True)
+                    return False, job.job_id
+            existing = await asyncio.to_thread(list_documents, self.config)
+            ready = next(
+                (item for item in existing if item["document_id"] == document_id and item["status"] == "ready"),
+                None,
+            )
+            if ready is not None:
+                await asyncio.to_thread(shutil.rmtree, staged_path.parent, True)
+                return False, ""
+            job = ProcessingJob(
+                job_id=uuid4().hex,
+                document_id=document_id,
+                name=name,
+                size_bytes=size_bytes,
+                staged_path=staged_path,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            self._jobs[job.job_id] = job
+            job.task = asyncio.create_task(self._run(job), name=f"document-{job.job_id}")
+            return True, job.job_id
+
+    def _delete_persisted(self, document_id: str, document_path: Path) -> None:
+        rag_config = load_rag_config()
+        store = self._vector_store_factory(rag_config.vector_store)
+        try:
+            store.delete({"document_id": document_id})
+        finally:
+            store.close()
+        shutil.rmtree(document_path)
+
+    async def delete(self, document_id: str) -> None:
+        if _DOCUMENT_ID.fullmatch(document_id) is None:
+            raise DocumentError("invalid_document_id", "The document ID is invalid.")
+        async with self._mutation_lock:
+            if self._closing:
+                raise DocumentError("document_unavailable", "Document processing is shutting down.")
+            if document_id in self._deleting or any(
+                job.document_id == document_id and job.status in {"queued", "processing"}
+                for job in self._jobs.values()
+            ):
+                raise DocumentError(
+                    "document_busy",
+                    "Wait for document processing to finish before deleting it.",
+                )
+            document_path = self.config.storage_root / document_id
+            if not document_path.is_dir():
+                raise DocumentError("document_not_found", "The document was not found.")
+            self._deleting.add(document_id)
+        try:
+            deletion = asyncio.create_task(
+                asyncio.to_thread(self._delete_persisted, document_id, document_path)
+            )
+            try:
+                await asyncio.shield(deletion)
+            except asyncio.CancelledError:
+                await asyncio.shield(deletion)
+                raise
+        except Exception as error:
+            logger.exception("Document %s could not be deleted.", document_id)
+            raise DocumentError(
+                "document_delete_failed",
+                "The document could not be deleted. Check the backend and Qdrant services.",
+            ) from error
+        finally:
+            async with self._mutation_lock:
+                self._deleting.discard(document_id)
+        async with self._mutation_lock:
+            self._jobs = {
+                job_id: job
+                for job_id, job in self._jobs.items()
+                if job.document_id != document_id
+            }
 
     async def _run(self, job: ProcessingJob) -> None:
         try:
@@ -343,6 +419,7 @@ class DocumentProcessManager:
                     "parse_count": 0,
                     "parse_version": None,
                     "status": "uploaded",
+                    "deletable": False,
                     "updated_at": job.created_at,
                     "stages": {
                         "parsing": _stage("pending"),
@@ -354,6 +431,7 @@ class DocumentProcessManager:
                 records.append(record)
                 by_id[job.document_id] = record
             if job.status in {"queued", "processing"}:
+                record["deletable"] = False
                 if job.status == "queued":
                     record["status"] = "queued"
                 elif record["status"] == "parsed":

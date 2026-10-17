@@ -48,6 +48,8 @@ class VectorStore(Protocol):
 
     def count(self, filters: Mapping[str, str]) -> int: ...
 
+    def delete(self, filters: Mapping[str, str]) -> None: ...
+
     def hybrid_search(
         self,
         dense_vectors: Sequence[Sequence[float]],
@@ -216,6 +218,21 @@ class QdrantVectorStore:
             exact=True,
         )
         return int(result.count)
+
+    def delete(self, filters: Mapping[str, str]) -> None:
+        """Delete every point matching the supplied payload fields."""
+        if not filters:
+            raise ValueError("Vector deletion requires at least one payload filter.")
+        if not self.client.collection_exists(self.config.collection):
+            return
+        models = self._models()
+        self.client.delete(
+            collection_name=self.config.collection,
+            points_selector=models.FilterSelector(
+                filter=self._filter(filters, models),
+            ),
+            wait=True,
+        )
 
     def search(
         self,

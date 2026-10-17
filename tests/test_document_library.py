@@ -3,12 +3,13 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 from opentalk.documents import pipeline
 from opentalk.documents.config import DocumentConfig
-from opentalk.documents.library import DocumentProcessManager, list_documents
+from opentalk.documents.library import DocumentError, DocumentProcessManager, list_documents
 from opentalk.sessions import config as session_settings
 from opentalk.sessions.api import create_app
 from opentalk.sessions.store import SessionStore
@@ -169,6 +170,7 @@ class FakeDocumentManager:
         self.items = []
         self.upload = None
         self.closed = False
+        self.deleted = []
 
     async def documents(self):
         return self.items
@@ -183,6 +185,7 @@ class FakeDocumentManager:
                 "parse_count": 0,
                 "parse_version": None,
                 "status": "queued",
+                "deletable": False,
                 "updated_at": "2026-10-14T10:00:00+00:00",
                 "stages": {
                     "parsing": {"status": "pending"},
@@ -195,6 +198,10 @@ class FakeDocumentManager:
 
     async def close(self):
         self.closed = True
+
+    async def delete(self, document_id):
+        self.deleted.append(document_id)
+        self.items = [item for item in self.items if item["document_id"] != document_id]
 
 
 def test_document_api_streams_one_pdf_and_reports_queue_state(tmp_path):
@@ -231,6 +238,9 @@ def test_document_api_streams_one_pdf_and_reports_queue_state(tmp_path):
             listing = await (await client.get("/documents")).json()
             assert listing["items"][0]["document_id"] == manager.upload["document_id"]
             assert listing["max_file_size_bytes"] == 1024
+            deleted = await client.delete(f"/documents/{manager.upload['document_id']}")
+            assert deleted.status == 200
+            assert manager.deleted == [manager.upload["document_id"]]
         assert manager.closed is True
 
     asyncio.run(scenario())
@@ -347,5 +357,50 @@ def test_document_manager_owns_and_terminates_processing_subprocess(tmp_path, mo
         await manager.close()
         assert process.terminated is True
         assert not staged.parent.exists()
+
+    asyncio.run(scenario())
+
+
+def test_document_manager_deletes_vectors_and_files_but_rejects_active_jobs(tmp_path):
+    import asyncio
+
+    class Store:
+        def __init__(self):
+            self.deleted = []
+            self.closed = False
+
+        def delete(self, filters):
+            self.deleted.append(filters)
+
+        def close(self):
+            self.closed = True
+
+    async def scenario():
+        config = configuration(tmp_path)
+        document_id = "c" * 64
+        document_path = config.storage_root / document_id
+        document_path.mkdir(parents=True)
+        (document_path / "source.pdf").write_bytes(b"%PDF-1.7\nfixture")
+        vector_store = Store()
+        manager = DocumentProcessManager(
+            config,
+            vector_store_factory=lambda _: vector_store,
+        )
+        await manager.delete(document_id)
+        assert vector_store.deleted == [{"document_id": document_id}]
+        assert vector_store.closed is True
+        assert not document_path.exists()
+        with pytest.raises(DocumentError, match="not found"):
+            await manager.delete(document_id)
+
+        busy_id = "d" * 64
+        busy_path = config.storage_root / busy_id
+        busy_path.mkdir(parents=True)
+        manager._jobs["busy"] = SimpleNamespace(
+            document_id=busy_id,
+            status="processing",
+        )
+        with pytest.raises(DocumentError, match="processing to finish"):
+            await manager.delete(busy_id)
 
     asyncio.run(scenario())

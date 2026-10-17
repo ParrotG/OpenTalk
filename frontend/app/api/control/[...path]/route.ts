@@ -4,21 +4,23 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 const backend = () => (process.env.OPENTALK_API_URL || 'http://127.0.0.1:8080').replace(/\/$/, '');
 const validPath =
-  /^(health\/services|documents|sessions|sessions\/[a-zA-Z0-9_-]+(?:\/(history|end))?)$/;
+  /^(health\/services|documents(?:\/[0-9a-f]{64})?|sessions|sessions\/[a-zA-Z0-9_-]+(?:\/(history|end))?)$/;
 let lastFailureLog = 0;
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const path = (await context.params).path.join('/');
   if (
     !validPath.test(path) ||
-    (request.method === 'POST' && !/^(documents|sessions(?:\/[a-zA-Z0-9_-]+\/end)?)$/.test(path))
+    (request.method === 'POST' && !/^(documents|sessions(?:\/[a-zA-Z0-9_-]+\/end)?)$/.test(path)) ||
+    (request.method === 'DELETE' &&
+      !/^(documents\/[0-9a-f]{64}|sessions\/[a-zA-Z0-9_-]+)$/.test(path))
   ) {
     return NextResponse.json({ message: 'Endpoint not found.' }, { status: 404 });
   }
   // Next.js can normalize nextUrl to localhost even when the browser uses 127.0.0.1.
   const origin = request.headers.get('origin');
   if (
-    request.method === 'POST' &&
+    ['POST', 'DELETE'].includes(request.method) &&
     origin &&
     (!URL.canParse(origin) || new URL(origin).host !== request.headers.get('host'))
   ) {
@@ -91,7 +93,11 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       cache: 'no-store',
       headers,
       signal: AbortSignal.timeout(
-        path === 'documents' && request.method === 'POST' ? 120000 : 8000,
+        path === 'documents' && request.method === 'POST'
+          ? 120000
+          : request.method === 'DELETE'
+            ? 30000
+            : 8000,
       ),
       ...(path === 'documents' && request.method === 'POST' ? { duplex: 'half' } : {}),
     } as RequestInit & { duplex?: 'half' });
@@ -116,4 +122,4 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   }
 }
 
-export { proxy as GET, proxy as POST };
+export { proxy as DELETE, proxy as GET, proxy as POST };

@@ -10,6 +10,7 @@ const saved = (id: string, status: string) => ({
   end_requested: false,
 });
 async function mockControl(page: Page, available = true) {
+  let sessions = [saved('normal-session', 'completed'), saved('failed-session', 'failed')];
   let documents: SavedDocument[] = [
     {
       document_id: 'a'.repeat(64),
@@ -18,6 +19,7 @@ async function mockControl(page: Page, available = true) {
       parse_count: 1,
       parse_version: 'docling-test',
       status: 'ready',
+      deletable: true,
       updated_at: '2026-10-14T10:00:00Z',
       stages: {
         parsing: { status: 'completed' },
@@ -48,6 +50,7 @@ async function mockControl(page: Page, available = true) {
           parse_count: 0,
           parse_version: null,
           status: 'queued',
+          deletable: false,
           stages: {
             parsing: { status: 'pending' },
             indexing: { status: 'pending' },
@@ -57,8 +60,15 @@ async function mockControl(page: Page, available = true) {
         documents = [uploaded, ...documents];
         body = { accepted: true, job_id: 'upload-job', document: uploaded };
       } else body = { items: documents, max_file_size_bytes: 100 * 1024 * 1024 };
-    } else if (path.endsWith('/sessions'))
-      body = [saved('normal-session', 'completed'), saved('failed-session', 'failed')];
+    } else if (route.request().method() === 'DELETE' && path.includes('/documents/')) {
+      const documentId = path.split('/').pop()!;
+      documents = documents.filter((document) => document.document_id !== documentId);
+      body = { deleted: true, document_id: documentId };
+    } else if (route.request().method() === 'DELETE' && path.includes('/sessions/')) {
+      const sessionId = path.split('/').pop()!;
+      sessions = sessions.filter((session) => session.session_id !== sessionId);
+      body = { deleted: true, session_id: sessionId };
+    } else if (path.endsWith('/sessions')) body = sessions;
     else if (path.endsWith('/history'))
       body = {
         items: [
@@ -112,6 +122,27 @@ test('document drawer uploads a PDF and shows global processing stages', async (
   await page.screenshot({ path: 'test-results/documents-mobile.png' });
   await page.getByRole('button', { name: 'Close documents' }).click();
   await expect(panel).toBeHidden();
+});
+
+test('terminal sessions and completed documents can be deleted', async ({ page }) => {
+  await mockControl(page);
+  page.on('dialog', (dialog) => dialog.accept());
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Documents' }).click();
+  const panel = page.getByRole('complementary', { name: 'Documents' });
+  await panel.getByRole('button', { name: 'Delete document Research notes.pdf' }).click();
+  await expect(panel).not.toContainText('Research notes.pdf');
+  await page.getByRole('button', { name: 'Close documents' }).click();
+
+  await page.getByLabel('Recent sessions', { exact: true }).first().click();
+  await page
+    .locator('.recent-row')
+    .filter({ hasText: 'normal-sessi' })
+    .getByRole('button', { name: 'Delete saved conversation' })
+    .click();
+  await expect(page.getByRole('button', { name: /normal-sessi/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /failed-sessi/ })).toBeVisible();
 });
 
 test('document drawer accepts another upload after a storage failure', async ({ page }) => {

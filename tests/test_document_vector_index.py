@@ -195,6 +195,8 @@ def test_vector_index_upserts_only_indexable_nodes_and_preserves_retrieval_paylo
     assert manifest["point_count"] == 2
     assert manifest["vector_store"]["collection"] == "documents_test"
     assert manifest["vector_store"]["lexical_vector_name"] == "lexical"
+    store.delete({"document_id": "document-1"})
+    assert store.count({"document_id": "document-1"}) == 0
     store.close()
 
 
