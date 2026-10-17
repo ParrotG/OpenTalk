@@ -1,0 +1,10 @@
+services:
+  api:
+    gpus: !reset []
+    environment:
+      OPENTALK_DOCUMENT_DEVICE: cpu
+
+  document-parser:
+    gpus: !reset []
+    environment:
+      OPENTALK_DOCUMENT_DEVICE: cpu

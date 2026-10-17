@@ -158,11 +158,10 @@ OPENTALK_TEST_EXTERNAL_SERVER=1 OPENTALK_LIVE_AUDIO_DIR=/tmp/opentalk-browser-au
 
 ### 8.4 Isolated Docker validation
 
-Normal GPU-enabled startup is
-`docker compose -f compose.yaml -f compose.cuda.yaml up -d --build --wait`; health does not prove
-media, real providers, or CUDA execution. The base Compose file remains suitable for service tests
-that do not parse a document, or when the parser device is explicitly set to `auto` or `cpu`.
-Offline container tests mount no user data:
+Normal GPU-enabled startup is `docker compose up -d --build --wait`; health does not prove media,
+real providers, or CUDA execution. CPU-only startup uses
+`docker compose -f compose.yaml -f compose.cpu.yaml up -d --build --wait`. Offline container tests
+mount no user data:
 
 ```bash
 docker compose -p opentalk-offline-tests --profile test run --build --rm --no-deps backend-tests

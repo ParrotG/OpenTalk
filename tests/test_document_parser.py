@@ -552,6 +552,35 @@ cuda_use_flash_attention2 = true
     )
 
 
+def test_document_device_environment_overrides_file(monkeypatch, tmp_path):
+    path = tmp_path / "documents.toml"
+    path.write_text(
+        """[documents]
+storage_root = "data/documents"
+max_file_size_mb = 2
+max_pages = 10
+document_timeout_seconds = 15.0
+images_scale = 1.5
+table_mode = "fast"
+do_ocr = true
+do_picture_description = true
+do_picture_classification = true
+do_formula_enrichment = true
+do_code_enrichment = false
+do_chart_extraction = false
+
+[documents.acceleration]
+device = "cuda"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENTALK_DOCUMENT_DEVICE", "cpu")
+
+    loaded = load_document_config(path)
+
+    assert loaded.acceleration.device == "cpu"
+
+
 @pytest.mark.parametrize(
     ("acceleration", "message"),
     (

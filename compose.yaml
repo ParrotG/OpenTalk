@@ -51,6 +51,7 @@ services:
 
   api:
     <<: *backend
+    gpus: all
     image: opentalk-backend-api:local
     build:
       context: .
@@ -139,6 +140,7 @@ services:
 
   document-parser:
     profiles: [documents]
+    gpus: all
     image: opentalk-document-parser:local
     build:
       context: .

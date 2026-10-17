@@ -851,7 +851,7 @@ LiveKit API secrets in `NEXT_PUBLIC_*` variables or the frontend environment.
 | `config/tts.toml` | Soniox TTS endpoint, model, voice, primary language, sample rate, and timing settings. |
 | `config/voice.toml` | LiveKit URL, agent name, VAD parameters, endpointing, and interruption duration. |
 | `config/sessions.toml` | Session/telemetry database paths, heartbeat/lease limits, context size, API host/port, token TTL, and tracing switch. |
-| `config/documents.toml` | Global PDF storage, parsing limits, image export, table mode, Docling enrichment switches, accelerator device, parser threads, stage batches, and queue bounds. |
+| `config/documents.toml` | Global PDF storage, parsing limits, image export, table mode, Docling enrichment switches, accelerator device, parser threads, stage batches, and queue bounds. `OPENTALK_DOCUMENT_DEVICE` can override the device for deployment. |
 | `config/rag.toml` | Embedding model/profile, token and batch limits, Qdrant schema/endpoint, hybrid candidate limits, context bounds, and image limits. |
 | `config/livekit-local.yaml` | Local LiveKit development server configuration for same-machine browser testing. |
 | `config/docker/` | Container-specific overrides for backend and session paths. |
@@ -899,14 +899,14 @@ The optional Compose tool uses bind-mounted input and output directories:
 ```bash
 OPENTALK_DOCUMENT_INPUT_DIR=/path/to/pdfs \
 OPENTALK_DOCUMENTS_DIR=/path/to/document-data \
-docker compose -f compose.yaml -f compose.cuda.yaml --profile documents \
-  run --build --rm document-parser /input/document.pdf
+docker compose --profile documents run --build --rm document-parser /input/document.pdf
 ```
 
 The input directory is read-only. PDF originals and every parse version are written beneath the
-host output directory. A separate named volume caches downloaded Docling model artifacts. The CUDA
-overlay exposes all host GPUs to the parser container; Docker must have NVIDIA Container Toolkit GPU
-support. Omit the overlay only after changing the configured accelerator to `auto` or `cpu`.
+host output directory. A separate named volume caches downloaded Docling model artifacts. The
+default Compose configuration exposes all host GPUs to the parser container and requires Docker
+NVIDIA Container Toolkit support. For CPU-only parsing, add `-f compose.cpu.yaml`; this removes the
+GPU request and sets the parser device to CPU.
 
 ### 7.5 Prepare hierarchical indexing nodes
 
@@ -1079,20 +1079,27 @@ For a production-style frontend build use `pnpm build && pnpm start` instead of 
 Configure `.env.local`, then run from the project root:
 
 ```bash
-docker compose -f compose.yaml -f compose.cuda.yaml up -d --build --wait
-docker compose -f compose.yaml -f compose.cuda.yaml ps
-docker compose -f compose.yaml -f compose.cuda.yaml logs --tail 100 worker api
+docker compose up -d --build --wait
+docker compose ps
+docker compose logs --tail 100 worker api
 ```
 
 Open <http://localhost:3000>. The stack includes LiveKit Server, Qdrant, the document-capable session
 API, the agent worker, and the standalone Next.js frontend. Session, telemetry, vector data, model
-caches, and the bind-mounted global document directory remain separate. The CUDA overlay is needed
-on `api` because frontend uploads are parsed by subprocesses owned by that service. CPU-only hosts
-can use the base Compose file after selecting `auto` or `cpu` in `config/documents.toml`.
+caches, and the bind-mounted global document directory remain separate. The default Compose file
+grants GPU access to `api` because frontend uploads are parsed by subprocesses owned by that service.
+After changing GPU configuration, use `docker compose up -d --force-recreate api`; restarting an
+existing container does not add a GPU DeviceRequest.
+
+CPU-only hosts use the explicit override, which also selects the CPU parser device:
+
+```bash
+docker compose -f compose.yaml -f compose.cpu.yaml up -d --build --wait
+```
 
 ```bash
 # Stop the stack while preserving data.
-docker compose -f compose.yaml -f compose.cuda.yaml down
+docker compose down
 
 # Run the backend offline test suite in isolation.
 docker compose --profile test run --build --rm --no-deps backend-tests

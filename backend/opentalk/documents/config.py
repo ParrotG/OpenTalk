@@ -1,6 +1,7 @@
 """Load and validate PDF parsing configuration."""
 
 import math
+import os
 import re
 import tomllib
 from dataclasses import asdict, dataclass, field
@@ -128,6 +129,9 @@ def load_document_config(path: Path | None = None) -> DocumentConfig:
             name: acceleration_data.get(name, getattr(acceleration_defaults, name))
             for name in asdict(acceleration_defaults)
         }
+        device_override = os.getenv("OPENTALK_DOCUMENT_DEVICE")
+        if device_override is not None:
+            acceleration_values["device"] = device_override
         device = acceleration_values["device"]
         if not isinstance(device, str) or re.fullmatch(
             r"(?:auto|cpu|mps|xpu|cuda(?::\d+)?)", device
