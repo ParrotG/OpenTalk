@@ -85,6 +85,27 @@ def inspect_prepared_index(output_path: Path, *, sample_size: int = 0) -> dict[s
     expected_counts = manifest.get("node_counts")
     if isinstance(expected_counts, dict) and dict(counts) != expected_counts:
         errors.append("Manifest node counts do not match nodes.jsonl.")
+    structure_section_count = 0
+    structure_output = manifest.get("outputs", {}).get("structure")
+    if isinstance(structure_output, str):
+        structure_path = output_path / structure_output
+        if not structure_path.is_file():
+            errors.append("The structure catalog is missing.")
+        else:
+            structure = json.loads(structure_path.read_text(encoding="utf-8"))
+            catalog_sections = structure.get("sections", [])
+            structure_section_count = len(catalog_sections)
+            if structure_section_count != counts.get("section", 0):
+                errors.append("The structure catalog section count is inconsistent.")
+            for section in catalog_sections:
+                for node_id in section.get("direct_node_ids", []):
+                    if node_id not in nodes_by_id:
+                        errors.append(
+                            f"Structure section {section.get('section_id')} references a missing node."
+                        )
+            for page, node_ids in structure.get("pages", {}).items():
+                if not page.isdigit() or any(node_id not in nodes_by_id for node_id in node_ids):
+                    errors.append(f"The structure catalog has an invalid page entry {page}.")
     report = {
         "valid": not errors,
         "errors": errors,
@@ -93,6 +114,7 @@ def inspect_prepared_index(output_path: Path, *, sample_size: int = 0) -> dict[s
         "profile": manifest.get("profile"),
         "node_counts": dict(counts),
         "indexable_node_count": len(indexable),
+        "structure_section_count": structure_section_count,
         "unindexable_non_text_count": sum(
             node.get("node_type") in _NON_TEXT_NODE_TYPES
             and not node.get("indexable")

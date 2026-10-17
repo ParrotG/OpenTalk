@@ -55,7 +55,7 @@ def test_document_listing_uses_latest_stage_manifests(tmp_path):
             "completed_at": "2026-10-14T10:01:00+00:00",
         },
     )
-    index = parse / "indexing" / "hierarchical-v2"
+    index = parse / "indexing" / "hierarchical-v3"
     write_json(
         index / "index_manifest.json",
         {

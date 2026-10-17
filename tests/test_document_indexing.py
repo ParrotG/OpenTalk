@@ -224,10 +224,34 @@ def test_prepare_index_preserves_hierarchy_chunks_and_non_text_elements(tmp_path
     assert manifest["indexable_node_count"] == len(indexable)
     assert manifest["node_counts"]["picture"] == 1
     assert manifest["node_counts"]["table"] == 1
+    assert manifest["outputs"]["structure"] == "structure.json"
+    structure = json.loads(result.structure_path.read_text(encoding="utf-8"))
+    structure_sections = {section["title"]: section for section in structure["sections"]}
+    report_section = structure_sections["Research report"]
+    results_section = structure_sections["Results"]
+    analysis_section = structure_sections["Analysis"]
+    assert results_section["parent_section_id"] == report_section["section_id"]
+    assert analysis_section["parent_section_id"] == results_section["section_id"]
+    assert results_section["direct_content_page_range"] == {"start": 2, "end": 3}
+    assert results_section["subtree_page_range"] == {"start": 1, "end": 4}
+    assert analysis_section["section_id"] in results_section["child_section_ids"]
+    assert structure["pages"]["2"]
+    assert all(
+        node_id in nodes_by_id
+        for node_ids in structure["pages"].values()
+        for node_id in node_ids
+    )
+    content_nodes = [
+        nodes_by_id[node_id]
+        for section in structure["sections"]
+        for node_id in section["direct_node_ids"]
+    ]
+    assert all(node["metadata"]["section_id"] for node in content_nodes)
     inspection = inspect_prepared_index(result.output_path)
     assert inspection["valid"] is True
     assert inspection["missing_asset_paths"] == []
     assert inspection["max_chunk_chars"] <= 60
+    assert inspection["structure_section_count"] == len(structure_sections)
 
 
 def test_prepare_index_creates_synthetic_section_and_retains_undescribed_picture(tmp_path):

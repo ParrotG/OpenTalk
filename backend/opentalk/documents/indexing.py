@@ -25,6 +25,7 @@ class IndexPreparationResult:
     profile: str
     output_path: Path
     nodes_path: Path
+    structure_path: Path
     manifest_path: Path
 
     def to_dict(self) -> dict[str, str]:
@@ -315,6 +316,106 @@ def _section_path(section: _Section, nodes_by_id: dict[str, dict[str, Any]]) -> 
     return list(reversed(values))
 
 
+def _page_range(page_numbers: Iterable[int]) -> dict[str, int | None]:
+    pages = sorted(set(page_numbers))
+    return {
+        "start": pages[0] if pages else None,
+        "end": pages[-1] if pages else None,
+    }
+
+
+def _build_structure_catalog(
+    nodes: list[dict[str, Any]],
+    *,
+    document_id: str,
+    parse_version: str,
+    profile: str,
+) -> dict[str, Any]:
+    nodes_by_id = {node["node_id"]: node for node in nodes}
+    sections = [node for node in nodes if node["node_type"] == "section"]
+    section_ids = {node["node_id"] for node in sections}
+    direct_content: dict[str, list[str]] = {section_id: [] for section_id in section_ids}
+
+    for section in sections:
+        for child_id in section["child_ids"]:
+            child = nodes_by_id[child_id]
+            if child["node_type"] != "context":
+                continue
+            direct_content[section["node_id"]].extend(child["child_ids"])
+
+    subtree_pages: dict[str, set[int]] = {}
+
+    def collect_subtree_pages(section_id: str) -> set[int]:
+        existing = subtree_pages.get(section_id)
+        if existing is not None:
+            return existing
+        pages = {
+            page
+            for node_id in direct_content[section_id]
+            for page in nodes_by_id[node_id].get("page_numbers", [])
+            if isinstance(page, int)
+        }
+        for child_id in nodes_by_id[section_id]["child_ids"]:
+            if child_id in section_ids:
+                pages.update(collect_subtree_pages(child_id))
+        subtree_pages[section_id] = pages
+        return pages
+
+    page_nodes: dict[int, list[str]] = {}
+    for section in sections:
+        for node_id in direct_content[section["node_id"]]:
+            for page in nodes_by_id[node_id].get("page_numbers", []):
+                if isinstance(page, int):
+                    page_nodes.setdefault(page, []).append(node_id)
+
+    entries = []
+    for order, section in enumerate(sections):
+        section_id = section["node_id"]
+        parent_id = section.get("parent_id")
+        child_section_ids = [
+            child_id for child_id in section["child_ids"] if child_id in section_ids
+        ]
+        direct_pages = {
+            page
+            for node_id in direct_content[section_id]
+            for page in nodes_by_id[node_id].get("page_numbers", [])
+            if isinstance(page, int)
+        }
+        entries.append(
+            {
+                "section_id": section_id,
+                "parent_section_id": parent_id if parent_id in section_ids else None,
+                "order": order,
+                "title": section["text"],
+                "level": section["level"],
+                "source_level": section.get("metadata", {}).get("source_level"),
+                "synthetic": bool(section.get("metadata", {}).get("synthetic")),
+                "heading_page_numbers": section.get("page_numbers", []),
+                "direct_content_page_range": _page_range(direct_pages),
+                "subtree_page_range": _page_range(collect_subtree_pages(section_id)),
+                "child_section_ids": child_section_ids,
+                "direct_node_ids": direct_content[section_id],
+            }
+        )
+
+    document = next(node for node in nodes if node["node_type"] == "document")
+    return {
+        "schema_version": 1,
+        "document_id": document_id,
+        "parse_version": parse_version,
+        "index_profile": profile,
+        "document_node_id": document["node_id"],
+        "page_numbers": document.get("page_numbers", []),
+        "root_section_ids": [
+            section["section_id"]
+            for section in entries
+            if section["parent_section_id"] is None
+        ],
+        "sections": entries,
+        "pages": {str(page): node_ids for page, node_ids in sorted(page_nodes.items())},
+    }
+
+
 def _prepare_sections(
     elements: list[dict[str, Any]],
     parse_path: Path,
@@ -400,6 +501,7 @@ def prepare_index(
     output_path.mkdir(parents=True)
     manifest_path = output_path / "index_manifest.json"
     nodes_path = output_path / "nodes.jsonl"
+    structure_path = output_path / "structure.json"
     started_at = datetime.now(UTC)
     manifest: dict[str, Any] = {
         "schema_version": 1,
@@ -475,7 +577,10 @@ def prepare_index(
                             element_ids=[item["element_id"] for item in relevant],
                             page_numbers=_pages(relevant),
                             provenance=_provenance(relevant),
-                            metadata={"section_path": heading_path},
+                            metadata={
+                                "section_id": section.node["node_id"],
+                                "section_path": heading_path,
+                            },
                         )
                     )
                 pending_text.clear()
@@ -502,6 +607,7 @@ def prepare_index(
                         provenance=_provenance([element]),
                         asset_references=[_asset_references(element)],
                         metadata={
+                            "section_id": section.node["node_id"],
                             "section_path": heading_path,
                             "label": label,
                             "context_text": element.get("text") or "[Table]",
@@ -522,7 +628,11 @@ def prepare_index(
                             page_numbers=_pages([element]),
                             provenance=_provenance([element]),
                             asset_references=[_asset_references(element)],
-                            metadata={"section_path": heading_path, "label": label},
+                            metadata={
+                                "section_id": section.node["node_id"],
+                                "section_path": heading_path,
+                                "label": label,
+                            },
                         )
                         table_node["child_ids"].append(child["node_id"])
                         leaf_nodes.append(child)
@@ -541,7 +651,11 @@ def prepare_index(
                             page_numbers=_pages([element]),
                             provenance=_provenance([element]),
                             asset_references=[_asset_references(element)],
-                            metadata={"section_path": heading_path, "label": label},
+                            metadata={
+                                "section_id": section.node["node_id"],
+                                "section_path": heading_path,
+                                "label": label,
+                            },
                         )
                     )
             flush_text()
@@ -584,6 +698,7 @@ def prepare_index(
                     provenance=[value for item in group for value in item["provenance"]],
                     asset_references=[value for item in group for value in item["asset_references"]],
                     metadata={
+                        "section_id": section.node["node_id"],
                         "section_path": heading_path,
                         "content_truncated": any(
                             len(item["metadata"].get("context_text", item["text"]))
@@ -619,6 +734,13 @@ def prepare_index(
             encoding="utf-8",
         )
         temporary.replace(nodes_path)
+        structure = _build_structure_catalog(
+            nodes,
+            document_id=document_id,
+            parse_version=parse_version,
+            profile=profile,
+        )
+        _write_json(structure_path, structure)
         counts: dict[str, int] = {}
         for node in nodes:
             counts[node["node_type"]] = counts.get(node["node_type"], 0) + 1
@@ -627,7 +749,7 @@ def prepare_index(
             completed_at=datetime.now(UTC).isoformat(),
             node_counts=counts,
             indexable_node_count=len(indexable_nodes),
-            outputs={"nodes": "nodes.jsonl"},
+            outputs={"nodes": "nodes.jsonl", "structure": "structure.json"},
         )
         _write_json(manifest_path, manifest)
     except Exception as error:
@@ -645,5 +767,6 @@ def prepare_index(
         profile=profile,
         output_path=output_path,
         nodes_path=nodes_path,
+        structure_path=structure_path,
         manifest_path=manifest_path,
     )
