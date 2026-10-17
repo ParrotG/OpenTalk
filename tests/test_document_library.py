@@ -7,7 +7,7 @@ import pytest
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
-from opentalk.documents import pipeline
+from opentalk.documents import library, pipeline
 from opentalk.documents.config import DocumentConfig
 from opentalk.documents.library import DocumentError, DocumentProcessManager, list_documents
 from opentalk.sessions import config as session_settings
@@ -356,6 +356,72 @@ def test_document_manager_owns_and_terminates_processing_subprocess(tmp_path, mo
         assert documents[0]["status"] == "parsing"
         await manager.close()
         assert process.terminated is True
+        assert not staged.parent.exists()
+
+    asyncio.run(scenario())
+
+
+def test_document_manager_records_cgroup_oom_failure(tmp_path, monkeypatch):
+    import asyncio
+
+    class KilledProcess:
+        def __init__(self):
+            self.returncode = None
+
+        async def communicate(self):
+            self.returncode = -9
+            return None, b"\x1b[31mmodel warning\x1b[0m"
+
+    async def scenario():
+        process = KilledProcess()
+
+        async def create_subprocess(*args, **options):
+            assert args[1:3] == ("-m", "opentalk.documents.process")
+            assert options["stderr"] == asyncio.subprocess.PIPE
+            return process
+
+        oom_counts = iter((2, 3))
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess)
+        monkeypatch.setattr(library, "_read_cgroup_oom_kills", lambda: next(oom_counts))
+        config = configuration(tmp_path)
+        document_id = "d" * 64
+        document_path = config.storage_root / document_id
+        document_path.mkdir(parents=True)
+        (document_path / "source.pdf").write_bytes(b"%PDF-1.7\nfixture")
+        manifest_path = document_path / "parses" / "oom-parse" / "manifest.json"
+        write_json(
+            manifest_path,
+            {
+                "status": "parsing",
+                "document_id": document_id,
+                "parse_version": "oom-parse",
+                "source_name": "large.pdf",
+                "started_at": "2026-10-18T01:00:00+00:00",
+            },
+        )
+        staged = config.storage_root / ".uploads" / "oom" / "large.pdf"
+        staged.parent.mkdir(parents=True)
+        staged.write_bytes(b"%PDF-1.7\nfixture")
+        manager = DocumentProcessManager(config)
+
+        accepted, job_id = await manager.enqueue(
+            document_id=document_id,
+            name="large.pdf",
+            size_bytes=staged.stat().st_size,
+            staged_path=staged,
+        )
+        assert accepted is True
+        task = manager._jobs[job_id].task
+        assert task is not None
+        await task
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["status"] == "failed"
+        assert manifest["error"]["type"] == "OutOfMemoryError"
+        assert manifest["error"]["returncode"] == -9
+        record = (await manager.documents())[0]
+        assert record["status"] == "failed"
+        assert "available host or container memory" in record["stages"]["parsing"]["error"]
         assert not staged.parent.exists()
 
     asyncio.run(scenario())

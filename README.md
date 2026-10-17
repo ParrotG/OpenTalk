@@ -283,7 +283,7 @@ cached between runs.
 
 Docling receives one shared accelerator policy with `device = "cuda"` by default, so supported
 layout, table, enrichment, and picture-description models, including the inline VLM, use the
-selected CUDA device. The threaded PDF backend renders pages on eight parser threads, while the
+selected CUDA device. The threaded PDF backend renders pages on four parser threads, while the
 standard pipeline overlaps its OCR, layout, and table stages through bounded queues and processes
 pages in configurable batches. Picture descriptions are batched separately. These settings improve
 throughput within one document while the application keeps one document-processing job at a time to
@@ -886,13 +886,15 @@ exports. Picture descriptions, picture classification, formula recognition, code
 and accurate table extraction are enabled by default. These use local Docling models; the first run
 may download model artifacts. Remote model services are disabled.
 
-The default `[documents.acceleration]` profile selects CUDA, uses eight CPU/parser threads, batches
-OCR and layout pages in groups of eight, batches table pages in groups of four, batches VLM picture
-descriptions in groups of eight, and caps the pipeline queue at 64 pages. Use `device = "cuda:N"`
-to select a particular GPU. Set `device = "auto"` for runtime selection or `device = "cpu"` on a
-machine without a usable CUDA runtime. Reduce stage and picture batch sizes if GPU memory is
-insufficient. Flash Attention 2 remains disabled because it requires a separately compatible
-installation; enable it only after providing that runtime dependency.
+The default `[documents.acceleration]` profile selects CUDA, uses eight model threads and four PDF
+parser threads, batches OCR and layout pages in groups of four, batches table pages in groups of two,
+batches VLM picture descriptions in groups of four, and caps each pipeline queue at eight pages.
+Rendered page images use scale 1.0 because Docling retains them until picture/table crops are
+assembled; scale 2.0 caused a 629-page document to exceed 20 GiB of host memory. Use
+`device = "cuda:N"` to select a particular GPU. Set `device = "auto"` for runtime selection or
+`device = "cpu"` on a machine without a usable CUDA runtime. Flash Attention 2 remains disabled
+because it requires a separately compatible installation; enable it only after providing that
+runtime dependency.
 
 The optional Compose tool uses bind-mounted input and output directories:
 

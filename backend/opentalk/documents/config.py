@@ -26,12 +26,12 @@ class HeadingHierarchyConfig:
 class DocumentAccelerationConfig:
     device: str = "cuda"
     num_threads: int = 8
-    parser_threads: int = 8
-    ocr_batch_size: int = 8
-    layout_batch_size: int = 8
-    table_batch_size: int = 4
-    picture_description_batch_size: int = 8
-    queue_max_size: int = 64
+    parser_threads: int = 4
+    ocr_batch_size: int = 4
+    layout_batch_size: int = 4
+    table_batch_size: int = 2
+    picture_description_batch_size: int = 4
+    queue_max_size: int = 8
     batch_polling_interval_seconds: float = 0.1
     cuda_use_flash_attention2: bool = False
 

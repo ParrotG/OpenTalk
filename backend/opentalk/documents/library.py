@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import shutil
+import signal
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,6 +19,8 @@ from opentalk.documents.vector_store import QdrantVectorStore, VectorStore
 
 logger = logging.getLogger(__name__)
 _DOCUMENT_ID = re.compile(r"[0-9a-f]{64}")
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ACTIVE_MANIFEST_STATUSES = frozenset({"parsing", "preparing", "indexing"})
 
 
 class DocumentError(ValueError):
@@ -72,6 +75,93 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_cgroup_oom_kills() -> int | None:
+    try:
+        values = {
+            name: int(value)
+            for name, value in (
+                line.split(maxsplit=1)
+                for line in Path("/sys/fs/cgroup/memory.events").read_text().splitlines()
+            )
+        }
+    except (OSError, ValueError):
+        return None
+    return values.get("oom_kill")
+
+
+def _process_failure(returncode: int, *, oom_killed: bool) -> dict[str, Any]:
+    if oom_killed:
+        return {
+            "type": "OutOfMemoryError",
+            "message": (
+                "Document processing exceeded the available host or container memory and was "
+                "terminated. Reduce parser concurrency or image resolution, or increase memory."
+            ),
+            "returncode": returncode,
+        }
+    if returncode < 0:
+        try:
+            signal_name = signal.Signals(-returncode).name
+        except ValueError:
+            signal_name = f"signal {-returncode}"
+        return {
+            "type": "ProcessSignalError",
+            "message": f"Document processing was terminated by {signal_name}.",
+            "returncode": returncode,
+            "signal": signal_name,
+        }
+    return {
+        "type": "ProcessExitError",
+        "message": f"Document processing exited with status {returncode}.",
+        "returncode": returncode,
+    }
+
+
+def _fail_active_manifest(
+    storage_root: Path,
+    document_id: str,
+    error: dict[str, Any],
+) -> None:
+    document_path = storage_root / document_id
+    candidates: list[tuple[float, Path, dict[str, Any]]] = []
+    patterns = (
+        "parses/*/manifest.json",
+        "parses/*/indexing/*/index_manifest.json",
+        "parses/*/indexing/*/vector_indexes/*/manifest.json",
+    )
+    for pattern in patterns:
+        for path in document_path.glob(pattern):
+            manifest = _read_json(path)
+            if manifest is None or manifest.get("status") not in _ACTIVE_MANIFEST_STATUSES:
+                continue
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                continue
+            candidates.append((modified, path, manifest))
+    if not candidates:
+        return
+    _, path, manifest = max(candidates, key=lambda item: item[0])
+    manifest.update(
+        status="failed",
+        completed_at=datetime.now(UTC).isoformat(),
+        error=error,
+    )
+    _write_json(path, manifest)
 
 
 def _timestamp(value: Any, fallback: float) -> float:
@@ -371,6 +461,7 @@ class DocumentProcessManager:
                 if self._closing:
                     return
                 job.status = "processing"
+                oom_kills_before = await asyncio.to_thread(_read_cgroup_oom_kills)
                 job.process = await asyncio.create_subprocess_exec(
                     sys.executable,
                     "-m",
@@ -383,10 +474,34 @@ class DocumentProcessManager:
                 if job.process.returncode == 0:
                     job.status = "completed"
                 else:
+                    oom_kills_after = await asyncio.to_thread(_read_cgroup_oom_kills)
+                    oom_killed = (
+                        oom_kills_before is not None
+                        and oom_kills_after is not None
+                        and oom_kills_after > oom_kills_before
+                    )
+                    failure = _process_failure(
+                        job.process.returncode,
+                        oom_killed=oom_killed,
+                    )
+                    await asyncio.to_thread(
+                        _fail_active_manifest,
+                        self.config.storage_root,
+                        job.document_id,
+                        failure,
+                    )
                     job.status = "failed"
-                    job.error = "Document processing failed. Inspect the stage manifest and backend logs."
-                    output = stderr.decode("utf-8", errors="replace")[-4000:]
-                    logger.error("Document job %s failed:\n%s", job.job_id, output)
+                    job.error = str(failure["message"])
+                    output = _ANSI_ESCAPE.sub(
+                        "", stderr.decode("utf-8", errors="replace")
+                    )[-4000:]
+                    logger.error(
+                        "Document job %s failed with return code %d: %s\n%s",
+                        job.job_id,
+                        job.process.returncode,
+                        job.error,
+                        output,
+                    )
         except asyncio.CancelledError:
             if job.process is not None and job.process.returncode is None:
                 job.process.terminate()

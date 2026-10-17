@@ -3,7 +3,7 @@ storage_root = "data/documents"
 max_file_size_mb = 500
 max_pages = 1000
 document_timeout_seconds = 7200.0
-images_scale = 2.0
+images_scale = 1.0
 table_mode = "accurate"
 do_ocr = true
 do_picture_description = true
@@ -15,12 +15,12 @@ do_chart_extraction = false
 [documents.acceleration]
 device = "cuda"
 num_threads = 8
-parser_threads = 8
-ocr_batch_size = 8
-layout_batch_size = 8
-table_batch_size = 4
-picture_description_batch_size = 8
-queue_max_size = 64
+parser_threads = 4
+ocr_batch_size = 4
+layout_batch_size = 4
+table_batch_size = 2
+picture_description_batch_size = 4
+queue_max_size = 8
 batch_polling_interval_seconds = 0.1
 cuda_use_flash_attention2 = false
 

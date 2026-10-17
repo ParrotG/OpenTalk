@@ -263,15 +263,15 @@ def test_docling_backend_enables_heading_hierarchy_with_parsed_pages(monkeypatch
             "batch_polling_interval_seconds",
         )
     } == {
-        "ocr_batch_size": 8,
-        "layout_batch_size": 8,
-        "table_batch_size": 4,
-        "queue_max_size": 64,
+        "ocr_batch_size": 4,
+        "layout_batch_size": 4,
+        "table_batch_size": 2,
+        "queue_max_size": 8,
         "batch_polling_interval_seconds": 0.1,
     }
-    assert captured["options"].picture_description_options.batch_size == 8
+    assert captured["options"].picture_description_options.batch_size == 4
     assert captured["backend"] == {
-        "parser_threads": 8,
+        "parser_threads": 4,
         "render_pages": True,
         "render_scale": 1.0,
     }
@@ -312,12 +312,12 @@ def test_parse_pdf_saves_global_source_and_versioned_non_text_artifacts(tmp_path
     assert manifest["settings"]["acceleration"] == {
         "device": "cuda",
         "num_threads": 8,
-        "parser_threads": 8,
-        "ocr_batch_size": 8,
-        "layout_batch_size": 8,
-        "table_batch_size": 4,
-        "picture_description_batch_size": 8,
-        "queue_max_size": 64,
+        "parser_threads": 4,
+        "ocr_batch_size": 4,
+        "layout_batch_size": 4,
+        "table_batch_size": 2,
+        "picture_description_batch_size": 4,
+        "queue_max_size": 8,
         "batch_polling_interval_seconds": 0.1,
         "cuda_use_flash_attention2": False,
     }
@@ -501,6 +501,7 @@ def test_default_document_capacity_covers_large_books():
     assert loaded.max_pages == 1000
     assert loaded.max_file_size_bytes == 500 * 1024 * 1024
     assert loaded.document_timeout_seconds == 7200.0
+    assert loaded.images_scale == 1.0
     assert loaded.acceleration == DocumentAccelerationConfig()
 
 
