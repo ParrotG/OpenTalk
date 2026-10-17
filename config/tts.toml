@@ -5,7 +5,7 @@ voice = "Maya"
 language = "zh"
 api_key_env = "SONIOX_API_KEY"
 sample_rate = 24000
-speed = 1.0
+speed = 1.2
 connection_timeout_seconds = 15.0
 stream_idle_timeout_seconds = 5.0
 # Long replies use consecutive requests so one provider duration limit cannot truncate playback.
