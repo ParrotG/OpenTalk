@@ -15,7 +15,7 @@ through the agent factory without rewriting transport or session persistence.
 ## Demo Video
 This video shows an earlier version of the demo.
 
-https://www.youtube.com/watch?v=qIVQs0rmlEs
+https://www.youtube.com/watch?v=s-QGoqUR80A
 
 ## 1. What OpenTalk is
 
